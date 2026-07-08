@@ -1,0 +1,10 @@
+/bin/
+/web/dist/*
+!/web/dist/.gitkeep
+/web/node_modules/
+/web/*.tsbuildinfo
+*.log
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea

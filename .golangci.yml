@@ -1,0 +1,37 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - unconvert
+    - unparam
+    - usestdlibvars
+  settings:
+    gosec:
+      excludes:
+        - G104 # duplicate of errcheck, which honors exclude-functions
+    errcheck:
+      exclude-functions:
+        # Closing an abandoned connection has no actionable error.
+        - (*github.com/coder/websocket.Conn).Close
+        - (*github.com/coder/websocket.Conn).CloseNow
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [noctx, bodyclose]
+      - path: _test\.go
+        text: "resp.Body.Close"
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/kevinw93/QBuzzer

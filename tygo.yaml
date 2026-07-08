@@ -1,0 +1,5 @@
+packages:
+  - path: "github.com/kevinw93/QBuzzer/internal/protocol"
+    output_path: "web/src/protocol.ts"
+    type_mappings:
+      json.RawMessage: "unknown"
