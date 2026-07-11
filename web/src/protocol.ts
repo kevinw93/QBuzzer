@@ -4,65 +4,211 @@
 // source: protocol.go
 /*
 Package protocol defines the HTTP and WebSocket wire types.
-web/src/protocol.ts is generated from this package by tygo.
+
+web/src/protocol.ts is generated from this file by tygo, and
+web/src/messages.ts (the discriminated unions) from the registry in
+codec.go by ./gen.
 */
 
 /**
- * Envelope wraps every WebSocket message in both directions. Type determines
- * the shape of Data.
+ * ProtocolVersion must match between client and server. The server closes
+ * mismatched connections with CloseCodeReloadRequired.
+ */
+export const ProtocolVersion = 1;
+/**
+ * Envelope wraps every WebSocket message. Seq is set by clients on every
+ * message except join and strictly increases for the lifetime of a session,
+ * across reconnects. Servers never set it.
  */
 export interface Envelope {
-  type: string;
-  data?: unknown;
+  type: MsgType;
+  seq?: number /* uint64 */;
+  payload?: unknown;
 }
+export type MsgType = string;
 /**
- * Server -> client message types.
+ * Client -> server.
  */
-export const MsgWelcome = "welcome"; // Welcome; always the first message on a connection
+export const MsgJoin: MsgType = "join";
+export const MsgSetName: MsgType = "set_name";
+export const MsgBuzz: MsgType = "buzz";
+export const MsgPong: MsgType = "pong";
+export const MsgStartTossup: MsgType = "start_tossup";
+export const MsgMarkPower: MsgType = "mark_power";
+export const MsgReadingFinished: MsgType = "reading_finished";
+export const MsgRule: MsgType = "rule";
+export const MsgUndo: MsgType = "undo";
+export const MsgNext: MsgType = "next";
+export const MsgProtest: MsgType = "protest";
 /**
- * Server -> client message types.
+ * Server -> client.
  */
-export const MsgState = "state"; // RoomState; replaces the client's entire state
+export const MsgWelcome: MsgType = "welcome";
+export const MsgState: MsgType = "state";
+export const MsgError: MsgType = "error";
+export const MsgPing: MsgType = "ping";
+export const MsgBuzzLocked: MsgType = "buzz_locked";
+export const MsgRuled: MsgType = "ruled";
+export const MsgScoreChanged: MsgType = "score_changed";
+export const RolePlayer = "player";
+export const RoleModerator = "moderator";
+export type Role = typeof RolePlayer | typeof RoleModerator;
 /**
- * Server -> client message types.
+ * CloseCode is an application WebSocket close code (4000-4999 are reserved
+ * for applications).
  */
-export const MsgError = "error"; // ErrorMessage; sent only to the client whose request failed
+export const CloseCodeReloadRequired = 4000; // protocol version mismatch; reload the page
+export const CloseCodeUnauthorized = 4001; // moderator token rejected
+export const CloseCodeUnknownSession = 4002; // session token unknown to this room; rejoin without it
+export const CloseCodeReplaced = 4003; // the same session connected elsewhere; do not reconnect
+export const CloseCodeTooSlow = 4004; // outbound buffer overflowed; reconnect
+export const CloseCodeJoinRequired = 4005; // first message was not a valid join
+export type CloseCode = typeof CloseCodeReloadRequired | typeof CloseCodeUnauthorized | typeof CloseCodeUnknownSession | typeof CloseCodeReplaced | typeof CloseCodeTooSlow | typeof CloseCodeJoinRequired;
 /**
- * Client -> server message types.
+ * Join must be the first message on a connection. Token resumes an existing
+ * session (players) or proves moderator rights (moderators).
  */
-export const MsgSetName = "set_name"; // SetName
-export interface Welcome {
-  playerId: string;
-}
-export interface PlayerView {
-  id: string;
-  name: string;
-}
-/**
- * RoomState is the complete state of a room. Version strictly increases within
- * a room; clients discard any state whose version is not greater than the last
- * one applied.
- */
-export interface RoomState {
-  version: number /* uint64 */;
-  code: string;
-  players: PlayerView[];
-}
-export const ErrCodeBadMessage = "bad_message";
-export const ErrCodeUnknownType = "unknown_type";
-export const ErrCodeInvalidName = "invalid_name";
-export interface ErrorMessage {
-  code: string;
-  message: string;
+export interface Join {
+  protocolVersion: number /* int */;
+  role: Role;
+  name?: string; // required for new players
+  token?: string;
 }
 export interface SetName {
   name: string;
 }
 /**
- * CreateRoomResponse is the body of a successful POST /api/rooms.
+ * Buzz is ignored unless TossupID is the tossup currently being read.
+ */
+export interface Buzz {
+  tossupId: string;
+  clientTimeMs: number /* float64 */; // client's clock; interpreted only via clock sync
+}
+/**
+ * Pong answers Ping with the client's receive and send times on its clock.
+ */
+export interface Pong {
+  pingId: number /* uint64 */;
+  clientRecvMs: number /* float64 */;
+  clientSendMs: number /* float64 */;
+}
+/**
+ * Moderator tossup actions name the tossup they were issued against and are
+ * rejected if it is no longer current.
+ */
+export interface StartTossup {
+  tossupId: string;
+}
+export interface MarkPower {
+  tossupId: string;
+}
+export interface ReadingFinished {
+  tossupId: string;
+}
+export interface Next {
+  tossupId: string;
+}
+export const RulingCorrect = "correct";
+export const RulingIncorrect = "incorrect"; // neg if the buzz interrupted, else zero
+export const RulingNoPenalty = "no_penalty"; // incorrect, never negged
+export type Ruling = typeof RulingCorrect | typeof RulingIncorrect | typeof RulingNoPenalty;
+/**
+ * Rule is rejected unless BuzzID is the buzz awaiting a ruling.
+ */
+export interface Rule {
+  buzzId: string;
+  result: Ruling;
+}
+/**
+ * Undo is rejected unless ActionID is the most recent undoable action.
+ */
+export interface Undo {
+  actionId: string;
+}
+export const MaxProtestNoteLen = 500;
+export interface Protest {
+  tossupId: string;
+  note: string;
+}
+/**
+ * Welcome is the first server message after a successful join. Clients store
+ * SessionToken to resume, and discard queued messages with seq <= LastSeq.
+ */
+export interface Welcome {
+  playerId: string;
+  role: Role;
+  sessionToken: string;
+  lastSeq: number /* uint64 */;
+}
+export interface PlayerView {
+  id: string;
+  name: string;
+  connected: boolean;
+}
+/**
+ * RoomState is the complete state of a room and replaces whatever the client
+ * had. Within one Epoch, Version strictly increases; clients discard states
+ * with an equal or lower Version. A new Epoch (room recreated, e.g. after a
+ * restart) resets Version and must be accepted.
+ */
+export interface RoomState {
+  epoch: string;
+  version: number /* uint64 */;
+  code: string;
+  moderatorConnected: boolean;
+  players: PlayerView[];
+}
+export const ErrCodeBadMessage = "bad_message";
+export const ErrCodeInvalidName = "invalid_name";
+export const ErrCodeForbidden = "forbidden";
+export const ErrCodeStale = "stale"; // precondition (tossupId, buzzId, actionId) no longer holds
+export const ErrCodeNotImplemented = "not_implemented";
+export type ErrCode = typeof ErrCodeBadMessage | typeof ErrCodeInvalidName | typeof ErrCodeForbidden | typeof ErrCodeStale | typeof ErrCodeNotImplemented;
+/**
+ * ErrorMessage is sent only to the client whose message failed. Seq
+ * identifies that message.
+ */
+export interface ErrorMessage {
+  code: ErrCode;
+  message: string;
+  seq?: number /* uint64 */;
+}
+/**
+ * Ping starts a clock-sync exchange; the client answers with Pong.
+ */
+export interface Ping {
+  id: number /* uint64 */;
+}
+/**
+ * BuzzLocked, Ruled, and ScoreChanged trigger UI effects (sounds, flashes).
+ * They never carry state the client should apply: the RoomState at Version
+ * is authoritative, and losing one of these is harmless.
+ */
+export interface BuzzLocked {
+  version: number /* uint64 */;
+  tossupId: string;
+  buzzId: string;
+  playerId: string;
+}
+export interface Ruled {
+  version: number /* uint64 */;
+  buzzId: string;
+  playerId: string;
+  result: Ruling;
+  points: number /* int */;
+}
+export interface ScoreChanged {
+  version: number /* uint64 */;
+  playerId: string;
+  delta: number /* int */;
+}
+/**
+ * CreateRoomResponse is the body of POST /api/rooms. ModeratorToken is shown
+ * only once; whoever holds it can moderate the room.
  */
 export interface CreateRoomResponse {
   code: string;
+  moderatorToken: string;
 }
 /**
  * MaxNameLen is measured in runes.

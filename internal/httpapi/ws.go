@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	maxMessageBytes = 4096
-	writeTimeout    = 5 * time.Second
-	pingInterval    = 20 * time.Second // detects half-open connections
-	pingTimeout     = 10 * time.Second
+	maxMessageBytes    = 4096
+	writeTimeout       = 5 * time.Second
+	pingInterval       = 20 * time.Second // detects half-open connections
+	pingTimeout        = 10 * time.Second
+	defaultJoinTimeout = 5 * time.Second
 )
 
 // joinRoom runs a reader (this goroutine), a writer, and a keepalive per
@@ -30,11 +31,6 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "room not found", http.StatusNotFound)
 		return
 	}
-	name, err := protocol.NormalizeName(r.URL.Query().Get("name"))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 
 	conn, err := websocket.Accept(w, r, nil) // nil options: cross-origin requests are rejected
 	if err != nil {
@@ -43,12 +39,16 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 	defer conn.CloseNow()
 	conn.SetReadLimit(maxMessageBytes)
 
+	join, ok := s.readJoin(conn)
+	if !ok {
+		return
+	}
 	c := rm.NewClient()
-	if err := rm.Join(c, name); err != nil {
+	if err := rm.Join(c, join); err != nil {
 		conn.Close(joinErrStatus(err), err.Error())
 		return
 	}
-	s.log.Info("client joined", "room", rm.Code(), "name", name)
+	s.log.Info("client joined", "room", rm.Code(), "role", join.Role)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -60,6 +60,44 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 	rm.Leave(c)
 	cancel() // stops the writer if the room exited and will never close c
 	wg.Wait()
+}
+
+// readJoin reads the mandatory first message. On failure it has already
+// closed conn and returns false.
+func (s *Server) readJoin(conn *websocket.Conn) (protocol.Join, bool) {
+	fail := func(code protocol.CloseCode, reason string) (protocol.Join, bool) {
+		conn.Close(websocket.StatusCode(code), reason)
+		return protocol.Join{}, false
+	}
+
+	// A read-context deadline would drop the TCP connection without a close
+	// frame; closing from a timer sends a proper close code instead.
+	timer := time.AfterFunc(s.joinTimeout, func() {
+		conn.Close(websocket.StatusCode(protocol.CloseCodeJoinRequired), "join timeout")
+	})
+	typ, data, err := conn.Read(context.Background())
+	if !timer.Stop() || err != nil {
+		return protocol.Join{}, false
+	}
+
+	var env protocol.Envelope
+	if typ != websocket.MessageText || json.Unmarshal(data, &env) != nil || env.Type != protocol.MsgJoin {
+		return fail(protocol.CloseCodeJoinRequired, "first message must be join")
+	}
+	// Checked before full decoding: a stale client's join may not match the
+	// current Join shape, and it needs to be told to reload, not that it is
+	// malformed.
+	var v struct {
+		ProtocolVersion int `json:"protocolVersion"`
+	}
+	if json.Unmarshal(env.Payload, &v) != nil || v.ProtocolVersion != protocol.ProtocolVersion {
+		return fail(protocol.CloseCodeReloadRequired, "protocol version mismatch; reload")
+	}
+	msg, err := protocol.DecodeClient(env)
+	if err != nil {
+		return fail(protocol.CloseCodeJoinRequired, truncate(err.Error()))
+	}
+	return msg.(protocol.Join), true
 }
 
 func readLoop(ctx context.Context, conn *websocket.Conn, rm *room.Room, c *room.Client) {
@@ -81,7 +119,8 @@ func readLoop(ctx context.Context, conn *websocket.Conn, rm *room.Room, c *room.
 			conn.Close(websocket.StatusInvalidFramePayloadData, "malformed envelope")
 			return
 		}
-		if err := rm.Deliver(c, env, receivedAt); err != nil {
+		msg, err := protocol.DecodeClient(env)
+		if err := rm.Deliver(c, room.Incoming{Seq: env.Seq, Msg: msg, Err: err, ReceivedAt: receivedAt}); err != nil {
 			return
 		}
 	}
@@ -131,7 +170,9 @@ func keepalive(ctx context.Context, conn *websocket.Conn) {
 func closeStatus(r room.CloseReason) (websocket.StatusCode, string) {
 	switch r {
 	case room.ReasonSlow:
-		return websocket.StatusPolicyViolation, "connection too slow; reconnect"
+		return websocket.StatusCode(protocol.CloseCodeTooSlow), "connection too slow; reconnect"
+	case room.ReasonReplaced:
+		return websocket.StatusCode(protocol.CloseCodeReplaced), "session opened elsewhere"
 	case room.ReasonRoomClosed:
 		return websocket.StatusGoingAway, "room closed"
 	default:
@@ -145,7 +186,19 @@ func joinErrStatus(err error) websocket.StatusCode {
 		return websocket.StatusTryAgainLater
 	case errors.Is(err, room.ErrClosed):
 		return websocket.StatusGoingAway
+	case errors.Is(err, room.ErrUnauthorized):
+		return websocket.StatusCode(protocol.CloseCodeUnauthorized)
+	case errors.Is(err, room.ErrUnknownSession):
+		return websocket.StatusCode(protocol.CloseCodeUnknownSession)
 	default:
-		return websocket.StatusPolicyViolation
+		return websocket.StatusCode(protocol.CloseCodeJoinRequired)
 	}
+}
+
+// truncate keeps a close reason within the 123-byte limit of a close frame.
+func truncate(s string) string {
+	if len(s) <= 120 {
+		return s
+	}
+	return s[:120]
 }

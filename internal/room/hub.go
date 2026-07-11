@@ -12,15 +12,15 @@ import (
 
 type Config struct {
 	MaxRooms          int
-	MaxClientsPerRoom int
-	IdleTimeout       time.Duration // an empty room shuts down after this long
+	MaxPlayersPerRoom int           // player seats, connected or not
+	IdleTimeout       time.Duration // a room with no connections shuts down after this long
 	SendBuffer        int           // per-client outbound buffer, in messages
 }
 
 func DefaultConfig() Config {
 	return Config{
 		MaxRooms:          1000,
-		MaxClientsPerRoom: 64,
+		MaxPlayersPerRoom: 64,
 		IdleTimeout:       10 * time.Minute,
 		SendBuffer:        16,
 	}
@@ -59,7 +59,7 @@ func (h *Hub) Create() (*Room, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := newRoom(code, h.cfg)
+	r := newRoom(code, rand.Text(), h.cfg)
 	h.rooms[code] = r
 	h.wg.Add(1)
 	go func() {

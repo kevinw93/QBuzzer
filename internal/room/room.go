@@ -2,7 +2,8 @@ package room
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strconv"
@@ -12,60 +13,82 @@ import (
 )
 
 var (
-	ErrClosed = errors.New("room closed")
-	ErrFull   = errors.New("room full")
+	ErrClosed         = errors.New("room closed")
+	ErrFull           = errors.New("room full")
+	ErrUnauthorized   = errors.New("moderator token rejected")
+	ErrUnknownSession = errors.New("unknown session")
 )
+
+// Incoming is one decoded client message. Exactly one of Msg and Err is set.
+type Incoming struct {
+	Seq        uint64
+	Msg        any   // a protocol payload by value, e.g. protocol.Buzz
+	Err        error // decode or validation failure
+	ReceivedAt time.Time
+}
 
 type (
 	joinEvent struct {
 		c     *Client
-		name  string
+		join  protocol.Join
 		reply chan error // buffered so the room never blocks replying
 	}
 	leaveEvent struct {
 		c *Client
 	}
 	messageEvent struct {
-		c   *Client
-		env protocol.Envelope
-		// receivedAt is taken by the connection reader, before the event waits
-		// in the inbox.
-		receivedAt time.Time
+		c  *Client
+		in Incoming
 	}
 )
 
-type member struct {
-	client *Client
-	id     string
-	name   string
+// seat is a session: it outlives connections so a player can reconnect with
+// the same identity and seq history.
+type seat struct {
+	id      string
+	role    protocol.Role
+	name    string
+	token   string
+	lastSeq uint64  // highest seq processed; lower or equal seqs are duplicates
+	client  *Client // nil while disconnected
 }
 
-// Room is one live game. All fields below inbox/done are owned by the run
+// Room is one live game. All fields below done are owned by the run
 // goroutine; other goroutines interact only by sending events to inbox, which
 // gives every event in the room a single total order.
 type Room struct {
-	code  string
-	cfg   Config
-	inbox chan any
-	done  chan struct{} // closed when run returns
+	code           string
+	epoch          string
+	moderatorToken string
+	cfg            Config
+	inbox          chan any
+	done           chan struct{} // closed when run returns
 
-	members  []*member // join order
-	byClient map[*Client]*member
-	nextID   int
-	version  uint64
+	players   []*seat // join order
+	moderator *seat   // nil until a moderator first joins
+	byToken   map[string]*seat
+	byClient  map[*Client]*seat
+	nextID    int
+	version   uint64
 }
 
-func newRoom(code string, cfg Config) *Room {
+func newRoom(code, moderatorToken string, cfg Config) *Room {
 	return &Room{
-		code:     code,
-		cfg:      cfg,
-		inbox:    make(chan any, 64),
-		done:     make(chan struct{}),
-		byClient: make(map[*Client]*member),
+		code:           code,
+		epoch:          rand.Text()[:8],
+		moderatorToken: moderatorToken,
+		cfg:            cfg,
+		inbox:          make(chan any, 64),
+		done:           make(chan struct{}),
+		byToken:        make(map[string]*seat),
+		byClient:       make(map[*Client]*seat),
 	}
 }
 
 func (r *Room) Code() string { return r.code }
+
+// ModeratorToken grants moderator rights in this room.
+func (r *Room) ModeratorToken() string { return r.moderatorToken }
 
 // Done is closed once the room has shut down.
 func (r *Room) Done() <-chan struct{} { return r.done }
@@ -74,11 +97,12 @@ func (r *Room) NewClient() *Client {
 	return &Client{send: make(chan []byte, r.cfg.SendBuffer)}
 }
 
-// Join adds c to the room. On success a Welcome followed by a RoomState is
-// already queued on c.Outbound().
-func (r *Room) Join(c *Client, name string) error {
+// Join attaches c to a new or existing seat. On success a Welcome followed
+// by a RoomState is already queued on c.Outbound(). If the seat was connected
+// elsewhere, that connection is closed with ReasonReplaced.
+func (r *Room) Join(c *Client, j protocol.Join) error {
 	reply := make(chan error, 1)
-	if err := r.submit(joinEvent{c: c, name: name, reply: reply}); err != nil {
+	if err := r.submit(joinEvent{c: c, join: j, reply: reply}); err != nil {
 		return err
 	}
 	select {
@@ -90,11 +114,12 @@ func (r *Room) Join(c *Client, name string) error {
 	}
 }
 
-// Leave is idempotent, and safe after the room has dropped c or shut down.
+// Leave disconnects c, keeping its seat. It is idempotent, and safe after the
+// room has dropped c or shut down.
 func (r *Room) Leave(c *Client) { _ = r.submit(leaveEvent{c: c}) }
 
-func (r *Room) Deliver(c *Client, env protocol.Envelope, receivedAt time.Time) error {
-	return r.submit(messageEvent{c: c, env: env, receivedAt: receivedAt})
+func (r *Room) Deliver(c *Client, in Incoming) error {
+	return r.submit(messageEvent{c: c, in: in})
 }
 
 func (r *Room) submit(ev any) error {
@@ -106,17 +131,17 @@ func (r *Room) submit(ev any) error {
 	}
 }
 
-// run returns when ctx is cancelled or the room has been empty for
+// run returns when ctx is cancelled or the room has had no connections for
 // cfg.IdleTimeout. onExit runs before done is closed.
 func (r *Room) run(ctx context.Context, onExit func()) {
-	idle := time.NewTimer(r.cfg.IdleTimeout) // armed only while the room is empty
+	idle := time.NewTimer(r.cfg.IdleTimeout) // armed only while nobody is connected
 	defer idle.Stop()
 
 	defer func() {
-		for _, m := range r.members {
-			closeClient(m.client, ReasonRoomClosed)
+		for c := range r.byClient {
+			closeClient(c, ReasonRoomClosed)
 		}
-		r.members, r.byClient = nil, nil
+		r.byClient, r.byToken = nil, nil
 		onExit()
 		close(r.done)
 	}()
@@ -128,9 +153,9 @@ func (r *Room) run(ctx context.Context, onExit func()) {
 		case <-idle.C:
 			return
 		case ev := <-r.inbox:
-			wasEmpty := len(r.members) == 0
+			wasEmpty := len(r.byClient) == 0
 			r.handle(ev)
-			switch isEmpty := len(r.members) == 0; {
+			switch isEmpty := len(r.byClient) == 0; {
 			case wasEmpty && !isEmpty:
 				idle.Stop() // relies on Go 1.23+: no stale tick is delivered after Stop
 			case !wasEmpty && isEmpty:
@@ -145,15 +170,15 @@ func (r *Room) handle(ev any) {
 	case joinEvent:
 		r.handleJoin(ev)
 	case leaveEvent:
-		// Clients already dropped as slow are not in byClient, so their
-		// channel is never closed twice.
-		if m, ok := r.byClient[ev.c]; ok {
-			r.remove(m, ReasonLeft)
+		// Clients already dropped (slow, replaced) are not in byClient, so
+		// their channel is never closed twice.
+		if s, ok := r.byClient[ev.c]; ok {
+			r.disconnect(s, ReasonLeft)
 			r.broadcastState()
 		}
 	case messageEvent:
-		if m, ok := r.byClient[ev.c]; ok {
-			r.handleMessage(m, ev)
+		if s, ok := r.byClient[ev.c]; ok {
+			r.handleMessage(s, ev.in)
 		}
 	default:
 		panic(fmt.Sprintf("room: unknown event %T", ev))
@@ -161,105 +186,178 @@ func (r *Room) handle(ev any) {
 }
 
 func (r *Room) handleJoin(ev joinEvent) {
-	if len(r.members) >= r.cfg.MaxClientsPerRoom {
-		ev.reply <- ErrFull
-		return
-	}
-	name, err := protocol.NormalizeName(ev.name)
+	s, err := r.seatFor(ev.join)
 	if err != nil {
 		ev.reply <- err
 		return
 	}
-	r.nextID++
-	m := &member{client: ev.c, id: "p" + strconv.Itoa(r.nextID), name: name}
-	r.members = append(r.members, m)
-	r.byClient[ev.c] = m
+	if s.client != nil {
+		r.disconnect(s, ReasonReplaced)
+	}
+	s.client = ev.c
+	r.byClient[ev.c] = s
 	ev.reply <- nil
 
-	r.sendTo(m, encode(protocol.MsgWelcome, protocol.Welcome{PlayerID: m.id}))
+	r.sendTo(s, encode(protocol.MsgWelcome, protocol.Welcome{
+		PlayerID: s.id, Role: s.role, SessionToken: s.token, LastSeq: s.lastSeq,
+	}))
 	r.broadcastState()
 }
 
-func (r *Room) handleMessage(m *member, ev messageEvent) {
-	switch ev.env.Type {
-	case protocol.MsgSetName:
-		var p protocol.SetName
-		if err := json.Unmarshal(ev.env.Data, &p); err != nil {
-			r.sendError(m, protocol.ErrCodeBadMessage, "invalid set_name payload")
-			return
+// seatFor finds or creates the seat for j. j has passed Join.Validate.
+func (r *Room) seatFor(j protocol.Join) (*seat, error) {
+	var name string
+	if j.Name != "" {
+		var err error
+		if name, err = protocol.NormalizeName(j.Name); err != nil {
+			return nil, err
 		}
-		name, err := protocol.NormalizeName(p.Name)
+	}
+
+	switch j.Role {
+	case protocol.RoleModerator:
+		if subtle.ConstantTimeCompare([]byte(j.Token), []byte(r.moderatorToken)) != 1 {
+			return nil, ErrUnauthorized
+		}
+		if r.moderator == nil {
+			r.moderator = &seat{id: "mod", role: protocol.RoleModerator, name: "Moderator", token: r.moderatorToken}
+		}
+		if name != "" {
+			r.moderator.name = name
+		}
+		return r.moderator, nil
+
+	case protocol.RolePlayer:
+		if j.Token != "" {
+			s, ok := r.byToken[j.Token]
+			if !ok {
+				return nil, ErrUnknownSession
+			}
+			if name != "" {
+				s.name = name
+			}
+			return s, nil
+		}
+		if len(r.players) >= r.cfg.MaxPlayersPerRoom {
+			return nil, ErrFull
+		}
+		r.nextID++
+		s := &seat{id: "p" + strconv.Itoa(r.nextID), role: protocol.RolePlayer, name: name, token: rand.Text()}
+		r.players = append(r.players, s)
+		r.byToken[s.token] = s
+		return s, nil
+	}
+	return nil, fmt.Errorf("unknown role %q", j.Role)
+}
+
+func (r *Room) handleMessage(s *seat, in Incoming) {
+	if in.Err != nil {
+		s.lastSeq = max(s.lastSeq, in.Seq)
+		r.sendError(s, in.Seq, protocol.ErrCodeBadMessage, in.Err.Error())
+		return
+	}
+	if _, ok := in.Msg.(protocol.Join); ok {
+		r.sendError(s, 0, protocol.ErrCodeBadMessage, "already joined")
+		return
+	}
+	if in.Seq <= s.lastSeq {
+		return // already processed; resent after a reconnect
+	}
+	s.lastSeq = in.Seq
+
+	switch m := in.Msg.(type) {
+	case protocol.SetName:
+		name, err := protocol.NormalizeName(m.Name)
 		if err != nil {
-			r.sendError(m, protocol.ErrCodeInvalidName, err.Error())
+			r.sendError(s, in.Seq, protocol.ErrCodeInvalidName, err.Error())
 			return
 		}
-		if name != m.name {
-			m.name = name
+		if name != s.name {
+			s.name = name
 			r.broadcastState()
 		}
+	case protocol.Pong:
+		// Clock sync (B5).
+	case protocol.Buzz:
+		if s.role != protocol.RolePlayer {
+			r.sendError(s, in.Seq, protocol.ErrCodeForbidden, "only players can buzz")
+			return
+		}
+		r.sendError(s, in.Seq, protocol.ErrCodeNotImplemented, "buzzing arrives with the game state machine")
+	case protocol.StartTossup, protocol.MarkPower, protocol.ReadingFinished,
+		protocol.Rule, protocol.Undo, protocol.Next, protocol.Protest:
+		if s.role != protocol.RoleModerator {
+			r.sendError(s, in.Seq, protocol.ErrCodeForbidden, "moderators only")
+			return
+		}
+		r.sendError(s, in.Seq, protocol.ErrCodeNotImplemented, "game actions arrive with the game state machine")
 	default:
-		r.sendError(m, protocol.ErrCodeUnknownType, "unknown message type "+strconv.Quote(ev.env.Type))
+		r.sendError(s, in.Seq, protocol.ErrCodeBadMessage, fmt.Sprintf("unexpected message %T", m))
 	}
 }
 
-// broadcastState never blocks. Members whose buffers are full are dropped and
-// the resulting state is broadcast again; each extra pass removes at least one
-// member, so the loop terminates.
+// broadcastState never blocks. Connections whose buffers are full are
+// dropped and the resulting state is broadcast again; each extra pass drops
+// at least one connection, so the loop terminates.
 func (r *Room) broadcastState() {
 	for {
 		r.version++
 		msg := encode(protocol.MsgState, r.snapshot())
-		var slow []*member
-		for _, m := range r.members {
+		var slow []*seat
+		for c, s := range r.byClient {
 			select {
-			case m.client.send <- msg:
+			case c.send <- msg:
 			default:
-				slow = append(slow, m)
+				slow = append(slow, s)
 			}
 		}
 		if len(slow) == 0 {
 			return
 		}
-		for _, m := range slow {
-			r.remove(m, ReasonSlow)
+		for _, s := range slow {
+			r.disconnect(s, ReasonSlow)
 		}
 	}
 }
 
-func (r *Room) sendError(m *member, code, message string) {
-	if !r.sendTo(m, encode(protocol.MsgError, protocol.ErrorMessage{Code: code, Message: message})) {
+func (r *Room) sendError(s *seat, seq uint64, code protocol.ErrCode, message string) {
+	msg := encode(protocol.MsgError, protocol.ErrorMessage{Code: code, Message: message, Seq: seq})
+	if !r.sendTo(s, msg) {
 		r.broadcastState()
 	}
 }
 
-// sendTo drops m if its buffer is full. On false the caller must broadcast.
-func (r *Room) sendTo(m *member, msg []byte) bool {
+// sendTo drops s's connection if its buffer is full. On false the caller must
+// broadcast.
+func (r *Room) sendTo(s *seat, msg []byte) bool {
 	select {
-	case m.client.send <- msg:
+	case s.client.send <- msg:
 		return true
 	default:
-		r.remove(m, ReasonSlow)
+		r.disconnect(s, ReasonSlow)
 		return false
 	}
 }
 
-func (r *Room) remove(m *member, reason CloseReason) {
-	delete(r.byClient, m.client)
-	for i, x := range r.members {
-		if x == m {
-			r.members = append(r.members[:i], r.members[i+1:]...)
-			break
-		}
-	}
-	closeClient(m.client, reason)
+// disconnect closes s's connection and keeps the seat.
+func (r *Room) disconnect(s *seat, reason CloseReason) {
+	delete(r.byClient, s.client)
+	closeClient(s.client, reason)
+	s.client = nil
 }
 
 func (r *Room) snapshot() protocol.RoomState {
-	players := make([]protocol.PlayerView, 0, len(r.members)) // non-nil: encodes as []
-	for _, m := range r.members {
-		players = append(players, protocol.PlayerView{ID: m.id, Name: m.name})
+	players := make([]protocol.PlayerView, 0, len(r.players)) // non-nil: encodes as []
+	for _, s := range r.players {
+		players = append(players, protocol.PlayerView{ID: s.id, Name: s.name, Connected: s.client != nil})
 	}
-	return protocol.RoomState{Version: r.version, Code: r.code, Players: players}
+	return protocol.RoomState{
+		Epoch:              r.epoch,
+		Version:            r.version,
+		Code:               r.code,
+		ModeratorConnected: r.moderator != nil && r.moderator.client != nil,
+		Players:            players,
+	}
 }
 
 // closeClient writes reason before close; Client.CloseReason depends on it.
@@ -268,8 +366,8 @@ func closeClient(c *Client, reason CloseReason) {
 	close(c.send)
 }
 
-// encode panics because marshaling protocol types cannot fail.
-func encode(typ string, v any) []byte {
+// encode panics because marshaling registered protocol types cannot fail.
+func encode(typ protocol.MsgType, v any) []byte {
 	b, err := protocol.Encode(typ, v)
 	if err != nil {
 		panic(fmt.Sprintf("room: encoding %s: %v", typ, err))

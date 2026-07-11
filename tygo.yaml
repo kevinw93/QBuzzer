@@ -1,5 +1,8 @@
 packages:
   - path: "github.com/kevinw93/QBuzzer/internal/protocol"
     output_path: "web/src/protocol.ts"
+    exclude_files:
+      - "codec.go"
+    enum_style: "union"
     type_mappings:
       json.RawMessage: "unknown"

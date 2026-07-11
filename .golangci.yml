@@ -22,7 +22,7 @@ linters:
   exclusions:
     rules:
       - path: _test\.go
-        linters: [noctx, bodyclose]
+        linters: [noctx, bodyclose, gosec]
       - path: _test\.go
         text: "resp.Body.Close"
         linters: [errcheck]

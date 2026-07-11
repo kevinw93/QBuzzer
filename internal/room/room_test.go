@@ -39,16 +39,36 @@ func newTestRoom(t *testing.T, mod func(*Config)) *Room {
 	return r
 }
 
-func join(t *testing.T, r *Room, name string) *Client {
+func playerJoin(name, token string) protocol.Join {
+	return protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RolePlayer, Name: name, Token: token}
+}
+
+// joinAs joins with j and consumes the Welcome.
+func joinAs(t *testing.T, r *Room, j protocol.Join) (*Client, protocol.Welcome) {
 	t.Helper()
 	c := r.NewClient()
-	if err := r.Join(c, name); err != nil {
-		t.Fatalf("join %q: %v", name, err)
+	if err := r.Join(c, j); err != nil {
+		t.Fatalf("join %+v: %v", j, err)
+	}
+	return c, recvAs[protocol.Welcome](t, c, protocol.MsgWelcome)
+}
+
+func join(t *testing.T, r *Room, name string) (*Client, protocol.Welcome) {
+	t.Helper()
+	return joinAs(t, r, playerJoin(name, ""))
+}
+
+func joinModerator(t *testing.T, r *Room) *Client {
+	t.Helper()
+	c, w := joinAs(t, r, protocol.Join{
+		ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Token: r.ModeratorToken(),
+	})
+	if w.Role != protocol.RoleModerator {
+		t.Fatalf("welcome role = %q", w.Role)
 	}
 	return c
 }
 
-// recv returns the next message for c, failing if none arrives or c is closed.
 func recv(t *testing.T, c *Client) protocol.Envelope {
 	t.Helper()
 	select {
@@ -67,14 +87,14 @@ func recv(t *testing.T, c *Client) protocol.Envelope {
 	panic("unreachable")
 }
 
-func recvAs[T any](t *testing.T, c *Client, typ string) T {
+func recvAs[T any](t *testing.T, c *Client, typ protocol.MsgType) T {
 	t.Helper()
 	env := recv(t, c)
 	if env.Type != typ {
-		t.Fatalf("got message type %q, want %q (data %s)", env.Type, typ, env.Data)
+		t.Fatalf("got message type %q, want %q (payload %s)", env.Type, typ, env.Payload)
 	}
 	var v T
-	if err := json.Unmarshal(env.Data, &v); err != nil {
+	if err := json.Unmarshal(env.Payload, &v); err != nil {
 		t.Fatal(err)
 	}
 	return v
@@ -90,7 +110,7 @@ func stateUntil(t *testing.T, c *Client, ok func(protocol.RoomState) bool) proto
 			continue
 		}
 		var s protocol.RoomState
-		if err := json.Unmarshal(env.Data, &s); err != nil {
+		if err := json.Unmarshal(env.Payload, &s); err != nil {
 			t.Fatal(err)
 		}
 		if ok(s) {
@@ -99,7 +119,6 @@ func stateUntil(t *testing.T, c *Client, ok func(protocol.RoomState) bool) proto
 	}
 }
 
-// waitClosed drains c and returns why the room closed it.
 func waitClosed(t *testing.T, c *Client) CloseReason {
 	t.Helper()
 	deadline := time.After(timeout)
@@ -115,13 +134,9 @@ func waitClosed(t *testing.T, c *Client) CloseReason {
 	}
 }
 
-func setName(t *testing.T, r *Room, c *Client, name string) {
+func send(t *testing.T, r *Room, c *Client, seq uint64, msg any) {
 	t.Helper()
-	data, err := json.Marshal(protocol.SetName{Name: name})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Deliver(c, protocol.Envelope{Type: protocol.MsgSetName, Data: data}, time.Now()); err != nil {
+	if err := r.Deliver(c, Incoming{Seq: seq, Msg: msg, ReceivedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -129,30 +144,38 @@ func setName(t *testing.T, r *Room, c *Client, name string) {
 func names(s protocol.RoomState) string {
 	var ns []string
 	for _, p := range s.Players {
-		ns = append(ns, p.Name)
+		n := p.Name
+		if !p.Connected {
+			n += "(away)"
+		}
+		ns = append(ns, n)
 	}
 	return strings.Join(ns, ",")
+}
+
+func namesAre(want string) func(protocol.RoomState) bool {
+	return func(s protocol.RoomState) bool { return names(s) == want }
 }
 
 func TestJoinSendsWelcomeThenState(t *testing.T) {
 	r := newTestRoom(t, nil)
 
-	a := join(t, r, "  Alice ")
-	if w := recvAs[protocol.Welcome](t, a, protocol.MsgWelcome); w.PlayerID != "p1" {
-		t.Errorf("alice id = %q, want p1", w.PlayerID)
+	a, wa := join(t, r, "  Alice ")
+	if wa.PlayerID != "p1" || wa.Role != protocol.RolePlayer || wa.SessionToken == "" || wa.LastSeq != 0 {
+		t.Errorf("welcome = %+v", wa)
 	}
 	s := recvAs[protocol.RoomState](t, a, protocol.MsgState)
-	if names(s) != "Alice" || s.Code != r.Code() {
+	if names(s) != "Alice" || s.Code != r.Code() || s.Epoch == "" || s.ModeratorConnected {
 		t.Errorf("state = %+v", s)
 	}
 
-	b := join(t, r, "Bob")
-	if w := recvAs[protocol.Welcome](t, b, protocol.MsgWelcome); w.PlayerID != "p2" {
-		t.Errorf("bob id = %q, want p2", w.PlayerID)
+	b, wb := join(t, r, "Bob")
+	if wb.PlayerID != "p2" || wb.SessionToken == wa.SessionToken {
+		t.Errorf("bob welcome = %+v", wb)
 	}
 	sb := recvAs[protocol.RoomState](t, b, protocol.MsgState)
 	sa := recvAs[protocol.RoomState](t, a, protocol.MsgState)
-	if names(sa) != "Alice,Bob" || sa.Version != sb.Version {
+	if names(sa) != "Alice,Bob" || sa.Version != sb.Version || sa.Epoch != s.Epoch {
 		t.Errorf("alice saw %+v, bob saw %+v", sa, sb)
 	}
 	if sa.Version <= s.Version {
@@ -160,68 +183,193 @@ func TestJoinSendsWelcomeThenState(t *testing.T) {
 	}
 }
 
-func TestEmptyRoomStateEncodesPlayersAsArray(t *testing.T) {
-	r := newTestRoom(t, nil)
-	b, err := protocol.Encode(protocol.MsgState, r.snapshot())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), `"players":[]`) {
-		t.Errorf("got %s, want players as []", b)
+func TestEpochsDifferBetweenRooms(t *testing.T) {
+	h, _ := newTestHub(t, nil)
+	r1, _ := h.Create()
+	r2, _ := h.Create()
+	if r1.epoch == "" || r1.epoch == r2.epoch {
+		t.Errorf("epochs %q and %q", r1.epoch, r2.epoch)
 	}
 }
 
 func TestSetNameBroadcastsAndVersionsIncrease(t *testing.T) {
 	r := newTestRoom(t, nil)
-	a := join(t, r, "Alice")
-	recv(t, a) // welcome
+	a, _ := join(t, r, "Alice")
 	last := recvAs[protocol.RoomState](t, a, protocol.MsgState).Version
 
 	for i := range 5 {
-		setName(t, r, a, fmt.Sprint("A", i))
+		send(t, r, a, uint64(i+1), protocol.SetName{Name: fmt.Sprint("A", i)})
 		s := recvAs[protocol.RoomState](t, a, protocol.MsgState)
-		if s.Version <= last {
-			t.Fatalf("version %d after %d", s.Version, last)
-		}
-		if names(s) != fmt.Sprint("A", i) {
-			t.Fatalf("names = %q", names(s))
+		if s.Version <= last || names(s) != fmt.Sprint("A", i) {
+			t.Fatalf("after rename %d: %+v (last version %d)", i, s, last)
 		}
 		last = s.Version
 	}
 }
 
-func TestBadRequestsGetErrorsOnlyToSender(t *testing.T) {
+func TestDuplicateSeqIsIgnored(t *testing.T) {
 	r := newTestRoom(t, nil)
-	a := join(t, r, "Alice")
-	b := join(t, r, "Bob")
-	stateUntil(t, a, func(s protocol.RoomState) bool { return len(s.Players) == 2 })
-	recv(t, b) // welcome
-	recv(t, b) // state
+	a, _ := join(t, r, "Alice")
+	recv(t, a) // state
+
+	send(t, r, a, 1, protocol.SetName{Name: "First"})
+	stateUntil(t, a, namesAre("First"))
+	send(t, r, a, 1, protocol.SetName{Name: "Duplicate"})
+	send(t, r, a, 0, protocol.SetName{Name: "Zero"})
+	send(t, r, a, 2, protocol.SetName{Name: "Second"})
+
+	// Events are processed in order, so if either ignored message had been
+	// applied, its state would arrive before this one.
+	if s := recvAs[protocol.RoomState](t, a, protocol.MsgState); names(s) != "Second" {
+		t.Errorf("names = %q, want Second", names(s))
+	}
+}
+
+func TestSeqGapsAreAllowed(t *testing.T) {
+	r := newTestRoom(t, nil)
+	a, _ := join(t, r, "Alice")
+	recv(t, a)
+	send(t, r, a, 5, protocol.SetName{Name: "Five"})
+	stateUntil(t, a, namesAre("Five"))
+	send(t, r, a, 3, protocol.SetName{Name: "Three"}) // below lastSeq: duplicate
+	send(t, r, a, 9, protocol.SetName{Name: "Nine"})
+	if s := recvAs[protocol.RoomState](t, a, protocol.MsgState); names(s) != "Nine" {
+		t.Errorf("names = %q, want Nine", names(s))
+	}
+}
+
+func TestReconnectResumesSeatAndSeq(t *testing.T) {
+	r := newTestRoom(t, nil)
+	a, wa := join(t, r, "Alice")
+	b, _ := join(t, r, "Bob")
+	stateUntil(t, b, namesAre("Alice,Bob"))
+
+	send(t, r, a, 3, protocol.SetName{Name: "Alicia"})
+	stateUntil(t, b, namesAre("Alicia,Bob"))
+
+	r.Leave(a)
+	if got := waitClosed(t, a); got != ReasonLeft {
+		t.Errorf("closed with %v", got)
+	}
+	stateUntil(t, b, namesAre("Alicia(away),Bob"))
+
+	a2, wa2 := joinAs(t, r, playerJoin("", wa.SessionToken))
+	if wa2.PlayerID != wa.PlayerID || wa2.SessionToken != wa.SessionToken || wa2.LastSeq != 3 {
+		t.Errorf("resumed welcome = %+v, original %+v", wa2, wa)
+	}
+	stateUntil(t, b, namesAre("Alicia,Bob"))
+
+	// The client resends seq 3 because it never saw it acknowledged; it must
+	// not be applied twice.
+	send(t, r, a2, 3, protocol.SetName{Name: "Resent"})
+	send(t, r, a2, 4, protocol.SetName{Name: "Al"})
+	if s := stateUntil(t, b, func(s protocol.RoomState) bool { return names(s) != "Alicia,Bob" }); names(s) != "Al,Bob" {
+		t.Errorf("names = %q, want Al,Bob", names(s))
+	}
+}
+
+func TestJoinReplacesExistingConnection(t *testing.T) {
+	r := newTestRoom(t, nil)
+	a1, w := join(t, r, "Alice")
+	a2, w2 := joinAs(t, r, playerJoin("Alice", w.SessionToken))
+	if w2.PlayerID != w.PlayerID {
+		t.Fatalf("replacement got a new seat: %+v", w2)
+	}
+	if got := waitClosed(t, a1); got != ReasonReplaced {
+		t.Errorf("old connection closed with %v, want %v", got, ReasonReplaced)
+	}
+	r.Leave(a1) // the old connection's reader leaving must not disconnect the new one
+	send(t, r, a2, 1, protocol.SetName{Name: "Still here"})
+	stateUntil(t, a2, namesAre("Still here"))
+}
+
+func TestJoinRejections(t *testing.T) {
+	r := newTestRoom(t, func(c *Config) { c.MaxPlayersPerRoom = 1 })
+	_, w := join(t, r, "Alice")
 
 	tests := []struct {
-		name     string
-		env      protocol.Envelope
-		wantCode string
+		name string
+		join protocol.Join
+		want error
 	}{
-		{"invalid name", protocol.Envelope{Type: protocol.MsgSetName, Data: json.RawMessage(`{"name":"   "}`)}, protocol.ErrCodeInvalidName},
-		{"bad payload", protocol.Envelope{Type: protocol.MsgSetName, Data: json.RawMessage(`[1,2]`)}, protocol.ErrCodeBadMessage},
-		{"missing payload", protocol.Envelope{Type: protocol.MsgSetName}, protocol.ErrCodeBadMessage},
-		{"unknown type", protocol.Envelope{Type: "launch_missiles"}, protocol.ErrCodeUnknownType},
+		{"seats full", playerJoin("Bob", ""), ErrFull},
+		{"unknown session", playerJoin("", "not-a-token"), ErrUnknownSession},
+		{"wrong moderator token", protocol.Join{ProtocolVersion: 1, Role: protocol.RoleModerator, Token: w.SessionToken}, ErrUnauthorized},
+		{"bad name", playerJoin("\x00", w.SessionToken), protocol.ErrInvalidName},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := r.Deliver(a, tt.env, time.Now()); err != nil {
-				t.Fatal(err)
+			if err := r.Join(r.NewClient(), tt.join); !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
 			}
-			if e := recvAs[protocol.ErrorMessage](t, a, protocol.MsgError); e.Code != tt.wantCode {
-				t.Errorf("code = %q, want %q", e.Code, tt.wantCode)
+		})
+	}
+	// A full room still lets existing seats reconnect.
+	joinAs(t, r, playerJoin("", w.SessionToken))
+}
+
+func TestModeratorPermissions(t *testing.T) {
+	r := newTestRoom(t, nil)
+	p, _ := join(t, r, "Alice")
+	m := joinModerator(t, r)
+	s := stateUntil(t, p, func(s protocol.RoomState) bool { return s.ModeratorConnected })
+	if names(s) != "Alice" {
+		t.Errorf("moderator should not be listed as a player: %q", names(s))
+	}
+	recv(t, m) // state
+
+	tests := []struct {
+		name     string
+		from     *Client
+		msg      any
+		wantCode protocol.ErrCode
+	}{
+		{"player cannot rule", p, protocol.Rule{BuzzID: "b1", Result: protocol.RulingCorrect}, protocol.ErrCodeForbidden},
+		{"player cannot advance", p, protocol.Next{TossupID: "t1"}, protocol.ErrCodeForbidden},
+		{"moderator cannot buzz", m, protocol.Buzz{TossupID: "t1"}, protocol.ErrCodeForbidden},
+		{"moderator action reaches game", m, protocol.Next{TossupID: "t1"}, protocol.ErrCodeNotImplemented},
+		{"player buzz reaches game", p, protocol.Buzz{TossupID: "t1"}, protocol.ErrCodeNotImplemented},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seq := uint64(i + 1)
+			send(t, r, tt.from, seq, tt.msg)
+			e := recvAs[protocol.ErrorMessage](t, tt.from, protocol.MsgError)
+			if e.Code != tt.wantCode || e.Seq != seq {
+				t.Errorf("error = %+v, want code %q seq %d", e, tt.wantCode, seq)
 			}
 		})
 	}
 
+	r.Leave(m)
+	stateUntil(t, p, func(s protocol.RoomState) bool { return !s.ModeratorConnected })
+}
+
+func TestErrorsGoOnlyToSender(t *testing.T) {
+	r := newTestRoom(t, nil)
+	a, _ := join(t, r, "Alice")
+	b, _ := join(t, r, "Bob")
+	stateUntil(t, a, namesAre("Alice,Bob"))
+	recv(t, b) // state
+
+	if err := r.Deliver(a, Incoming{Seq: 1, Err: errors.New("invalid buzz payload")}); err != nil {
+		t.Fatal(err)
+	}
+	if e := recvAs[protocol.ErrorMessage](t, a, protocol.MsgError); e.Code != protocol.ErrCodeBadMessage || e.Seq != 1 {
+		t.Errorf("error = %+v", e)
+	}
+	send(t, r, a, 2, protocol.SetName{Name: "   "})
+	if e := recvAs[protocol.ErrorMessage](t, a, protocol.MsgError); e.Code != protocol.ErrCodeInvalidName {
+		t.Errorf("error = %+v", e)
+	}
+	send(t, r, a, 3, playerJoin("Again", ""))
+	if e := recvAs[protocol.ErrorMessage](t, a, protocol.MsgError); e.Code != protocol.ErrCodeBadMessage {
+		t.Errorf("error = %+v", e)
+	}
+
 	// Events are processed in order, so if the errors leaked to Bob he would
 	// see them before this state.
-	setName(t, r, a, "Alicia")
+	send(t, r, a, 4, protocol.SetName{Name: "Alicia"})
 	if s := recvAs[protocol.RoomState](t, b, protocol.MsgState); names(s) != "Alicia,Bob" {
 		t.Errorf("bob saw %q", names(s))
 	}
@@ -229,14 +377,14 @@ func TestBadRequestsGetErrorsOnlyToSender(t *testing.T) {
 
 func TestSlowClientIsDroppedWithoutBlockingOthers(t *testing.T) {
 	r := newTestRoom(t, func(c *Config) { c.SendBuffer = 4 })
-	slow := join(t, r, "Slow") // never reads
-	fast := join(t, r, "Fast")
+	slow, _ := join(t, r, "Slow") // never reads
+	fast, _ := join(t, r, "Fast")
 
 	for i := range 10 {
 		want := fmt.Sprint("Fast", i)
-		setName(t, r, fast, want)
+		send(t, r, fast, uint64(i+1), protocol.SetName{Name: want})
 		stateUntil(t, fast, func(s protocol.RoomState) bool {
-			return len(s.Players) > 0 && s.Players[len(s.Players)-1].Name == want
+			return len(s.Players) == 2 && s.Players[1].Name == want
 		})
 	}
 
@@ -244,38 +392,22 @@ func TestSlowClientIsDroppedWithoutBlockingOthers(t *testing.T) {
 		t.Errorf("slow closed with %v, want %v", got, ReasonSlow)
 	}
 	r.Leave(slow) // must not double-close
-	setName(t, r, fast, "Done")
-	if s := stateUntil(t, fast, func(s protocol.RoomState) bool { return names(s) == "Done" }); len(s.Players) != 1 {
-		t.Errorf("players = %q, want only Done", names(s))
-	}
+	send(t, r, fast, 11, protocol.SetName{Name: "Done"})
+	stateUntil(t, fast, namesAre("Slow(away),Done"))
 }
 
-func TestLeaveRemovesPlayerAndIsIdempotent(t *testing.T) {
+func TestLeaveKeepsSeatAndIsIdempotent(t *testing.T) {
 	r := newTestRoom(t, nil)
-	a := join(t, r, "Alice")
-	b := join(t, r, "Bob")
-	stateUntil(t, a, func(s protocol.RoomState) bool { return len(s.Players) == 2 })
+	a, _ := join(t, r, "Alice")
+	b, _ := join(t, r, "Bob")
+	stateUntil(t, a, namesAre("Alice,Bob"))
 
 	r.Leave(b)
 	r.Leave(b)
 	if got := waitClosed(t, b); got != ReasonLeft {
 		t.Errorf("bob closed with %v, want %v", got, ReasonLeft)
 	}
-	stateUntil(t, a, func(s protocol.RoomState) bool { return names(s) == "Alice" })
-}
-
-func TestJoinRejections(t *testing.T) {
-	r := newTestRoom(t, func(c *Config) { c.MaxClientsPerRoom = 1 })
-	if err := r.Join(r.NewClient(), "\x00bad"); !errors.Is(err, protocol.ErrInvalidName) {
-		t.Errorf("control char name: err = %v", err)
-	}
-	if err := r.Join(r.NewClient(), strings.Repeat("x", protocol.MaxNameLen+1)); !errors.Is(err, protocol.ErrInvalidName) {
-		t.Errorf("long name: err = %v", err)
-	}
-	join(t, r, "Alice")
-	if err := r.Join(r.NewClient(), "Bob"); !errors.Is(err, ErrFull) {
-		t.Errorf("full room: err = %v, want ErrFull", err)
-	}
+	stateUntil(t, a, namesAre("Alice,Bob(away)"))
 }
 
 func TestIdleRoomShutsDown(t *testing.T) {
@@ -292,18 +424,18 @@ func TestIdleRoomShutsDown(t *testing.T) {
 	if _, ok := h.Get(r.Code()); ok {
 		t.Error("closed room still registered in hub")
 	}
-	if err := r.Join(r.NewClient(), "Late"); !errors.Is(err, ErrClosed) {
+	if err := r.Join(r.NewClient(), playerJoin("Late", "")); !errors.Is(err, ErrClosed) {
 		t.Errorf("join after close: err = %v, want ErrClosed", err)
 	}
 }
 
-func TestOccupiedRoomStaysOpenThenIdlesAfterLastLeave(t *testing.T) {
+func TestRoomIdlesOnlyWithoutConnections(t *testing.T) {
 	h, _ := newTestHub(t, func(c *Config) { c.IdleTimeout = 30 * time.Millisecond })
 	r, err := h.Create()
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := join(t, r, "Alice")
+	a, _ := join(t, r, "Alice")
 
 	select {
 	case <-r.Done():
@@ -311,11 +443,11 @@ func TestOccupiedRoomStaysOpenThenIdlesAfterLastLeave(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 
-	r.Leave(a)
+	r.Leave(a) // the seat remains, but nobody is connected
 	select {
 	case <-r.Done():
 	case <-time.After(timeout):
-		t.Fatal("room did not close after becoming empty")
+		t.Fatal("room did not close after its last connection left")
 	}
 }
 
@@ -325,7 +457,7 @@ func TestShutdownClosesClientsAndStopsCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := join(t, r, "Alice")
+	a, _ := join(t, r, "Alice")
 
 	cancel()
 	if got := waitClosed(t, a); got != ReasonRoomClosed {
@@ -337,22 +469,22 @@ func TestShutdownClosesClientsAndStopsCreation(t *testing.T) {
 	}
 }
 
-func TestHubLimitsAndCodes(t *testing.T) {
+func TestHubLimitsCodesAndTokens(t *testing.T) {
 	h, _ := newTestHub(t, func(c *Config) { c.MaxRooms = 50 })
-	seen := map[string]bool{}
+	codes, tokens := map[string]bool{}, map[string]bool{}
 	for range 50 {
 		r, err := h.Create()
 		if err != nil {
 			t.Fatal(err)
 		}
-		code := r.Code()
-		if len(code) != codeLen || strings.Trim(code, codeAlphabet) != "" {
-			t.Errorf("bad code %q", code)
+		code, tok := r.Code(), r.ModeratorToken()
+		if len(code) != codeLen || strings.Trim(code, codeAlphabet) != "" || codes[code] {
+			t.Errorf("bad or duplicate code %q", code)
 		}
-		if seen[code] {
-			t.Errorf("duplicate code %q", code)
+		if len(tok) < 26 || tokens[tok] {
+			t.Errorf("bad or duplicate moderator token %q", tok)
 		}
-		seen[code] = true
+		codes[code], tokens[tok] = true, true
 		if got, ok := h.Get(strings.ToLower(code)); !ok || got != r {
 			t.Errorf("lowercase lookup of %q failed", code)
 		}
@@ -374,13 +506,13 @@ func TestConcurrentClients(t *testing.T) {
 				}
 				close(drained)
 			}()
-			if err := r.Join(c, fmt.Sprint("P", i)); err != nil {
+			if err := r.Join(c, playerJoin(fmt.Sprint("P", i), "")); err != nil {
 				t.Error(err)
 				return
 			}
 			for j := range 5 {
-				data, _ := json.Marshal(protocol.SetName{Name: fmt.Sprintf("P%d-%d", i, j)})
-				if err := r.Deliver(c, protocol.Envelope{Type: protocol.MsgSetName, Data: data}, time.Now()); err != nil {
+				msg := protocol.SetName{Name: fmt.Sprintf("P%d-%d", i, j)}
+				if err := r.Deliver(c, Incoming{Seq: uint64(j + 1), Msg: msg}); err != nil {
 					t.Error(err)
 				}
 			}
@@ -390,9 +522,14 @@ func TestConcurrentClients(t *testing.T) {
 	}
 	wg.Wait()
 
-	last := join(t, r, "Last")
-	recv(t, last) // welcome
-	if s := recvAs[protocol.RoomState](t, last, protocol.MsgState); names(s) != "Last" {
-		t.Errorf("players = %q, want only Last", names(s))
+	last, _ := join(t, r, "Last")
+	s := recvAs[protocol.RoomState](t, last, protocol.MsgState)
+	if len(s.Players) != 21 {
+		t.Fatalf("players = %d, want 21", len(s.Players))
+	}
+	for _, p := range s.Players {
+		if p.Connected != (p.Name == "Last") {
+			t.Errorf("player %+v has wrong connected state", p)
+		}
 	}
 }

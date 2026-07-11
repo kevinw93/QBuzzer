@@ -8,19 +8,25 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
 
 type Server struct {
-	hub *room.Hub
-	log *slog.Logger
+	hub         *room.Hub
+	log         *slog.Logger
+	joinTimeout time.Duration
 }
 
 // New returns the application handler. assets is the built frontend.
 func New(hub *room.Hub, assets fs.FS, log *slog.Logger) http.Handler {
-	s := &Server{hub: hub, log: log}
+	s := &Server{hub: hub, log: log, joinTimeout: defaultJoinTimeout}
+	return s.handler(assets)
+}
+
+func (s *Server) handler(assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -31,7 +37,8 @@ func New(hub *room.Hub, assets fs.FS, log *slog.Logger) http.Handler {
 	return mux
 }
 
-// createRoom is unauthenticated until moderator identity exists (step 4).
+// createRoom is unauthenticated: anyone may open a room and becomes its
+// moderator by holding the returned token.
 func (s *Server) createRoom(w http.ResponseWriter, _ *http.Request) {
 	rm, err := s.hub.Create()
 	switch {
@@ -43,7 +50,8 @@ func (s *Server) createRoom(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "could not create room", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, http.StatusCreated, protocol.CreateRoomResponse{Code: rm.Code()})
+	w.Header().Set("Cache-Control", "no-store") // carries a credential
+	writeJSON(w, http.StatusCreated, protocol.CreateRoomResponse{Code: rm.Code(), ModeratorToken: rm.ModeratorToken()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -7,6 +7,7 @@ const (
 	ReasonLeft       CloseReason = iota
 	ReasonSlow                   // outbound buffer was full; the client should reconnect
 	ReasonRoomClosed             // idle timeout or server shutdown
+	ReasonReplaced               // the same session joined on another connection
 )
 
 func (r CloseReason) String() string {
@@ -17,6 +18,8 @@ func (r CloseReason) String() string {
 		return "slow"
 	case ReasonRoomClosed:
 		return "room closed"
+	case ReasonReplaced:
+		return "replaced"
 	default:
 		return "unknown"
 	}

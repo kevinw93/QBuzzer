@@ -15,11 +15,12 @@ dev: web/node_modules
 
 gen:
 	go tool tygo generate
+	go run ./internal/protocol/gen
 
-# Fails if web/src/protocol.ts is stale relative to internal/protocol.
+# Fails if generated TypeScript is stale relative to internal/protocol.
 check-gen: gen
-	@git diff --exit-code -- web/src/protocol.ts || \
-		(echo "web/src/protocol.ts is stale: run 'make gen' and commit" && exit 1)
+	@git diff --exit-code -- web/src/protocol.ts web/src/messages.ts || \
+		(echo "generated TypeScript is stale: run 'make gen' and commit" && exit 1)
 
 test:
 	go test -race ./...
