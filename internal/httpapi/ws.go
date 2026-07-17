@@ -128,22 +128,21 @@ func readLoop(ctx context.Context, conn *websocket.Conn, rm *room.Room, c *room.
 
 func writeLoop(ctx context.Context, conn *websocket.Conn, c *room.Client) {
 	for {
-		select {
-		case <-ctx.Done():
+		msg, err := c.Next(ctx)
+		if errors.Is(err, room.ErrClientClosed) {
+			status, reason := closeStatus(c.CloseReason())
+			conn.Close(status, reason)
 			return
-		case msg, ok := <-c.Outbound():
-			if !ok {
-				status, reason := closeStatus(c.CloseReason())
-				conn.Close(status, reason)
-				return
-			}
-			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
-			err := conn.Write(wctx, websocket.MessageText, msg)
-			cancel()
-			if err != nil {
-				conn.CloseNow() // unblocks the reader
-				return
-			}
+		}
+		if err != nil {
+			return
+		}
+		wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+		err = conn.Write(wctx, websocket.MessageText, msg)
+		cancel()
+		if err != nil {
+			conn.CloseNow() // unblocks the reader
+			return
 		}
 	}
 }

@@ -216,3 +216,19 @@ func requireID(field, id string) error {
 	}
 	return nil
 }
+
+// Effect is implemented by the effect events (BuzzLocked, Ruled,
+// ScoreChanged). WithVersion returns a copy referring to the state version
+// that contains the effect's change.
+type Effect interface {
+	EffectType() MsgType
+	WithVersion(v uint64) Effect
+}
+
+func (e BuzzLocked) EffectType() MsgType   { return MsgBuzzLocked }
+func (e Ruled) EffectType() MsgType        { return MsgRuled }
+func (e ScoreChanged) EffectType() MsgType { return MsgScoreChanged }
+
+func (e BuzzLocked) WithVersion(v uint64) Effect   { e.Version = v; return e }
+func (e Ruled) WithVersion(v uint64) Effect        { e.Version = v; return e }
+func (e ScoreChanged) WithVersion(v uint64) Effect { e.Version = v; return e }

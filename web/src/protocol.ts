@@ -182,7 +182,8 @@ export interface Ping {
 /**
  * BuzzLocked, Ruled, and ScoreChanged trigger UI effects (sounds, flashes).
  * They never carry state the client should apply: the RoomState at Version
- * is authoritative, and losing one of these is harmless.
+ * is authoritative, and losing one of these is harmless. An effect arrives
+ * before the RoomState with its Version, never after.
  */
 export interface BuzzLocked {
   version: number /* uint64 */;

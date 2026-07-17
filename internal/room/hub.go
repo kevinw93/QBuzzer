@@ -14,7 +14,8 @@ type Config struct {
 	MaxRooms          int
 	MaxPlayersPerRoom int           // player seats, connected or not
 	IdleTimeout       time.Duration // a room with no connections shuts down after this long
-	SendBuffer        int           // per-client outbound buffer, in messages
+	SendBuffer        int           // per-client queue of non-state messages
+	NewGame           func() Game   // nil: game actions are rejected as not implemented
 }
 
 func DefaultConfig() Config {

@@ -257,3 +257,25 @@ func TestNormalizeName(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectsAreRegisteredServerMessages(t *testing.T) {
+	for _, e := range []Effect{BuzzLocked{}, Ruled{}, ScoreChanged{}} {
+		stamped := e.WithVersion(42)
+		b, err := Encode(e.EffectType(), stamped)
+		if err != nil {
+			t.Errorf("%T: %v", e, err)
+			continue
+		}
+		var env struct {
+			Payload struct {
+				Version uint64 `json:"version"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(b, &env); err != nil || env.Payload.Version != 42 {
+			t.Errorf("%T: version not stamped: %s", e, b)
+		}
+		if reflect.ValueOf(e).FieldByName("Version").Uint() != 0 {
+			t.Errorf("%T: WithVersion mutated the receiver", e)
+		}
+	}
+}

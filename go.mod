@@ -2,7 +2,10 @@ module github.com/kevinw93/QBuzzer
 
 go 1.27.3
 
-require github.com/coder/websocket v1.8.15
+require (
+	github.com/coder/websocket v1.8.15
+	go.uber.org/goleak v1.3.0
+)
 
 require (
 	github.com/fatih/structtag v1.2.0 // indirect

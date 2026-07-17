@@ -13,10 +13,13 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"go.uber.org/goleak"
 
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
+
+func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
 const timeout = 2 * time.Second
 
