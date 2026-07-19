@@ -22,17 +22,33 @@ var samples = map[MsgType]any{
 	MsgUndo:            Undo{ActionID: "a12"},
 	MsgNext:            Next{TossupID: "t3"},
 	MsgProtest:         Protest{TossupID: "t3", Note: "answer was acceptable: “Gödel”"},
+	MsgRuleBonus:       RuleBonus{BonusID: "B3", Part: 2, BouncebackTeamID: "T2"},
+	MsgCreateTeam:      CreateTeam{Name: "Gödel Escher"},
+	MsgAssignTeam:      AssignTeam{PlayerID: "p2", TeamID: "T1"},
+	MsgChooseTeam:      ChooseTeam{TeamID: "T1"},
 
 	MsgWelcome: Welcome{PlayerID: "p1", Role: RolePlayer, SessionToken: "tok", LastSeq: 41},
 	MsgState: RoomState{
 		Epoch: "e1", Version: 5, Code: "ABC234", ModeratorConnected: true,
 		Players: []PlayerView{{ID: "p1", Name: "Alice", Connected: true}, {ID: "p2", Name: "Bob"}},
+		Game: GameView{
+			Phase: PhaseBonus, TossupID: "t3", TossupNumber: 3, PowerMarked: true, ReadingFinished: false,
+			Buzzes: []BuzzView{
+				{ID: "b6", PlayerID: "p2", TeamID: "T2", OffsetMs: 812.5, Status: BuzzStatusLost},
+				{ID: "b7", PlayerID: "p1", TeamID: "T1", OffsetMs: 820, Status: BuzzStatusCorrect, Power: true, Interrupt: true, Points: 15},
+			},
+			LockedOut:    []string{"T2"},
+			Bonus:        &BonusView{ID: "B3", TeamID: "T1", Parts: []BonusPartView{{Ruled: true, Correct: true}, {Ruled: true, BouncebackTeamID: "T2"}, {}}},
+			Teams:        []TeamView{{ID: "T1", Name: "Alpha", Score: 25, PlayerIDs: []string{"p1"}}, {ID: "T2", Name: "Beta", Score: 10, PlayerIDs: []string{"p2"}}},
+			Protests:     []ProtestView{{TossupID: "t2", PlayerID: "p2", Note: "pronunciation"}},
+			LastActionID: "a41",
+		},
 	},
 	MsgError:        ErrorMessage{Code: ErrCodeStale, Message: "buzz b6 is no longer pending", Seq: 12},
 	MsgPing:         Ping{ID: 9},
 	MsgBuzzLocked:   BuzzLocked{Version: 6, TossupID: "t3", BuzzID: "b7", PlayerID: "p2"},
 	MsgRuled:        Ruled{Version: 7, BuzzID: "b7", PlayerID: "p2", Result: RulingCorrect, Points: 15},
-	MsgScoreChanged: ScoreChanged{Version: 7, PlayerID: "p2", Delta: -5},
+	MsgScoreChanged: ScoreChanged{Version: 7, TeamID: "T2", Delta: -5},
 }
 
 func TestEverySpecHasASample(t *testing.T) {
@@ -121,11 +137,14 @@ func TestWireFormat(t *testing.T) {
 			`{"type":"buzz","seq":7,"payload":{"tossupId":"t3","clientTimeMs":1500.5}}`,
 		},
 		{
-			"state with no players encodes []",
+			"idle state encodes empty lists as []",
 			func() ([]byte, error) {
-				return Encode(MsgState, RoomState{Epoch: "e", Version: 1, Code: "ABC234", Players: []PlayerView{}})
+				return Encode(MsgState, RoomState{Epoch: "e", Version: 1, Code: "ABC234", Players: []PlayerView{}, Game: GameView{
+					Phase: PhaseIdle, TossupID: "t1", TossupNumber: 1,
+					Buzzes: []BuzzView{}, LockedOut: []string{}, Teams: []TeamView{}, Protests: []ProtestView{},
+				}})
 			},
-			`{"type":"state","payload":{"epoch":"e","version":1,"code":"ABC234","moderatorConnected":false,"players":[]}}`,
+			`{"type":"state","payload":{"epoch":"e","version":1,"code":"ABC234","moderatorConnected":false,"players":[],"game":{"phase":"idle","tossupId":"t1","tossupNumber":1,"powerMarked":false,"readingFinished":false,"buzzes":[],"lockedOut":[],"teams":[],"protests":[],"individual":false}}}`,
 		},
 		{
 			"error",

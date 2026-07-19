@@ -35,6 +35,10 @@ const (
 	MsgUndo            MsgType = "undo"
 	MsgNext            MsgType = "next"
 	MsgProtest         MsgType = "protest"
+	MsgRuleBonus       MsgType = "rule_bonus"
+	MsgCreateTeam      MsgType = "create_team"
+	MsgAssignTeam      MsgType = "assign_team"
+	MsgChooseTeam      MsgType = "choose_team"
 
 	// Server -> client.
 	MsgWelcome      MsgType = "welcome"
@@ -165,6 +169,7 @@ type RoomState struct {
 	Code               string       `json:"code"`
 	ModeratorConnected bool         `json:"moderatorConnected"`
 	Players            []PlayerView `json:"players"`
+	Game               GameView     `json:"game"`
 }
 
 type ErrCode string
@@ -175,6 +180,7 @@ const (
 	ErrCodeForbidden      ErrCode = "forbidden"
 	ErrCodeStale          ErrCode = "stale" // precondition (tossupId, buzzId, actionId) no longer holds
 	ErrCodeNotImplemented ErrCode = "not_implemented"
+	ErrCodeNotAllowed     ErrCode = "not_allowed" // not valid in the current game phase or for this player
 )
 
 // ErrorMessage is sent only to the client whose message failed. Seq
@@ -210,9 +216,9 @@ type Ruled struct {
 }
 
 type ScoreChanged struct {
-	Version  uint64 `json:"version"`
-	PlayerID string `json:"playerId"`
-	Delta    int    `json:"delta"`
+	Version uint64 `json:"version"`
+	TeamID  string `json:"teamId"`
+	Delta   int    `json:"delta"`
 }
 
 // ---- HTTP ----
@@ -226,3 +232,112 @@ type CreateRoomResponse struct {
 
 // MaxNameLen is measured in runes.
 const MaxNameLen = 32
+
+// ---- Game: client -> server ----
+
+const MaxBonusParts = 10
+
+// RuleBonus rules one bonus part. A part is ruled once; use Undo to change it.
+// BouncebackTeamID awards a missed part to another team when the ruleset
+// allows bouncebacks.
+type RuleBonus struct {
+	BonusID          string `json:"bonusId"`
+	Part             int    `json:"part"` // 0-based
+	Correct          bool   `json:"correct"`
+	BouncebackTeamID string `json:"bouncebackTeamId,omitempty"`
+}
+
+type CreateTeam struct {
+	Name string `json:"name"`
+}
+
+// AssignTeam moves a player to a team; an empty TeamID unassigns them.
+type AssignTeam struct {
+	PlayerID string `json:"playerId"`
+	TeamID   string `json:"teamId,omitempty"`
+}
+
+// ChooseTeam lets a player assign themselves.
+type ChooseTeam struct {
+	TeamID string `json:"teamId"`
+}
+
+// ---- Game: server -> client (inside RoomState) ----
+
+type Phase string
+
+const (
+	PhaseIdle           Phase = "idle"            // between tossups; TossupID is the next to start
+	PhaseReading        Phase = "reading"         // buzzing open
+	PhaseBuzzWindow     Phase = "buzz_window"     // collecting near-simultaneous buzzes
+	PhaseAwaitingRuling Phase = "awaiting_ruling" // one buzz holds the floor
+	PhaseBonus          Phase = "bonus"
+	PhaseTossupDead     Phase = "tossup_dead" // every team locked out, or time expired
+)
+
+type BuzzStatus string
+
+const (
+	BuzzStatusPending   BuzzStatus = "pending" // inside the collection window
+	BuzzStatusLost      BuzzStatus = "lost"    // another buzz in the window was earlier
+	BuzzStatusAwaiting  BuzzStatus = "awaiting"
+	BuzzStatusCorrect   BuzzStatus = "correct"
+	BuzzStatusIncorrect BuzzStatus = "incorrect"
+	BuzzStatusNoPenalty BuzzStatus = "no_penalty"
+)
+
+// BuzzView is one buzz on the current tossup. OffsetMs is milliseconds after
+// the tossup started, on the server's adjudication clock.
+type BuzzView struct {
+	ID        string     `json:"id"`
+	PlayerID  string     `json:"playerId"`
+	TeamID    string     `json:"teamId"`
+	OffsetMs  float64    `json:"offsetMs"`
+	Status    BuzzStatus `json:"status"`
+	Power     bool       `json:"power"`     // before the power mark
+	Interrupt bool       `json:"interrupt"` // before reading finished
+	Points    int        `json:"points"`
+}
+
+// TeamView is a team and its score. In individual play every player is a
+// team whose ID is the player's ID and whose Name is empty.
+type TeamView struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Score     int      `json:"score"`
+	PlayerIDs []string `json:"playerIds"`
+}
+
+type BonusPartView struct {
+	Ruled            bool   `json:"ruled"`
+	Correct          bool   `json:"correct"`
+	BouncebackTeamID string `json:"bouncebackTeamId,omitempty"`
+}
+
+type BonusView struct {
+	ID     string          `json:"id"`
+	TeamID string          `json:"teamId"` // the team that earned the bonus
+	Parts  []BonusPartView `json:"parts"`
+}
+
+type ProtestView struct {
+	TossupID string `json:"tossupId"`
+	PlayerID string `json:"playerId"` // who filed it ("mod" for the moderator)
+	Note     string `json:"note"`
+}
+
+// GameView is the game portion of RoomState.
+type GameView struct {
+	Phase           Phase         `json:"phase"`
+	TossupID        string        `json:"tossupId"`
+	TossupNumber    int           `json:"tossupNumber"`
+	PowerMarked     bool          `json:"powerMarked"`
+	ReadingFinished bool          `json:"readingFinished"`
+	Buzzes          []BuzzView    `json:"buzzes"`    // current tossup, earliest first
+	LockedOut       []string      `json:"lockedOut"` // team IDs, or player IDs under player lockout
+	Bonus           *BonusView    `json:"bonus,omitempty"`
+	Teams           []TeamView    `json:"teams"`
+	Protests        []ProtestView `json:"protests"`
+	LastActionID    string        `json:"lastActionId,omitempty"` // target for Undo
+	Individual      bool          `json:"individual"`
+}

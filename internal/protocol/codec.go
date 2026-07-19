@@ -31,6 +31,10 @@ var clientSpecs = []Spec{
 	{MsgUndo, Undo{}, true},
 	{MsgNext, Next{}, true},
 	{MsgProtest, Protest{}, true},
+	{MsgRuleBonus, RuleBonus{}, true},
+	{MsgCreateTeam, CreateTeam{}, true},
+	{MsgAssignTeam, AssignTeam{}, true},
+	{MsgChooseTeam, ChooseTeam{}, true},
 }
 
 var serverSpecs = []Spec{
@@ -232,3 +236,27 @@ func (e ScoreChanged) EffectType() MsgType { return MsgScoreChanged }
 func (e BuzzLocked) WithVersion(v uint64) Effect   { e.Version = v; return e }
 func (e Ruled) WithVersion(v uint64) Effect        { e.Version = v; return e }
 func (e ScoreChanged) WithVersion(v uint64) Effect { e.Version = v; return e }
+
+func (m RuleBonus) Validate() error {
+	if m.Part < 0 || m.Part >= MaxBonusParts {
+		return fmt.Errorf("part must be 0-%d", MaxBonusParts-1)
+	}
+	if len(m.BouncebackTeamID) > maxIDLen {
+		return errors.New("bouncebackTeamId too long")
+	}
+	return requireID("bonusId", m.BonusID)
+}
+
+func (m CreateTeam) Validate() error {
+	_, err := NormalizeName(m.Name)
+	return err
+}
+
+func (m AssignTeam) Validate() error {
+	if len(m.TeamID) > maxIDLen {
+		return errors.New("teamId too long")
+	}
+	return requireID("playerId", m.PlayerID)
+}
+
+func (m ChooseTeam) Validate() error { return requireID("teamId", m.TeamID) }

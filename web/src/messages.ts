@@ -14,6 +14,10 @@ export type ClientMessage =
   | { type: 'undo'; seq: number; payload: p.Undo }
   | { type: 'next'; seq: number; payload: p.Next }
   | { type: 'protest'; seq: number; payload: p.Protest }
+  | { type: 'rule_bonus'; seq: number; payload: p.RuleBonus }
+  | { type: 'create_team'; seq: number; payload: p.CreateTeam }
+  | { type: 'assign_team'; seq: number; payload: p.AssignTeam }
+  | { type: 'choose_team'; seq: number; payload: p.ChooseTeam }
 
 export type ServerMessage =
   | { type: 'welcome'; payload: p.Welcome }

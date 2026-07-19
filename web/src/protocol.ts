@@ -40,6 +40,10 @@ export const MsgRule: MsgType = "rule";
 export const MsgUndo: MsgType = "undo";
 export const MsgNext: MsgType = "next";
 export const MsgProtest: MsgType = "protest";
+export const MsgRuleBonus: MsgType = "rule_bonus";
+export const MsgCreateTeam: MsgType = "create_team";
+export const MsgAssignTeam: MsgType = "assign_team";
+export const MsgChooseTeam: MsgType = "choose_team";
 /**
  * Server -> client.
  */
@@ -157,13 +161,15 @@ export interface RoomState {
   code: string;
   moderatorConnected: boolean;
   players: PlayerView[];
+  game: GameView;
 }
 export const ErrCodeBadMessage = "bad_message";
 export const ErrCodeInvalidName = "invalid_name";
 export const ErrCodeForbidden = "forbidden";
 export const ErrCodeStale = "stale"; // precondition (tossupId, buzzId, actionId) no longer holds
 export const ErrCodeNotImplemented = "not_implemented";
-export type ErrCode = typeof ErrCodeBadMessage | typeof ErrCodeInvalidName | typeof ErrCodeForbidden | typeof ErrCodeStale | typeof ErrCodeNotImplemented;
+export const ErrCodeNotAllowed = "not_allowed"; // not valid in the current game phase or for this player
+export type ErrCode = typeof ErrCodeBadMessage | typeof ErrCodeInvalidName | typeof ErrCodeForbidden | typeof ErrCodeStale | typeof ErrCodeNotImplemented | typeof ErrCodeNotAllowed;
 /**
  * ErrorMessage is sent only to the client whose message failed. Seq
  * identifies that message.
@@ -200,7 +206,7 @@ export interface Ruled {
 }
 export interface ScoreChanged {
   version: number /* uint64 */;
-  playerId: string;
+  teamId: string;
   delta: number /* int */;
 }
 /**
@@ -215,3 +221,101 @@ export interface CreateRoomResponse {
  * MaxNameLen is measured in runes.
  */
 export const MaxNameLen = 32;
+export const MaxBonusParts = 10;
+/**
+ * RuleBonus rules one bonus part. A part is ruled once; use Undo to change it.
+ * BouncebackTeamID awards a missed part to another team when the ruleset
+ * allows bouncebacks.
+ */
+export interface RuleBonus {
+  bonusId: string;
+  part: number /* int */; // 0-based
+  correct: boolean;
+  bouncebackTeamId?: string;
+}
+export interface CreateTeam {
+  name: string;
+}
+/**
+ * AssignTeam moves a player to a team; an empty TeamID unassigns them.
+ */
+export interface AssignTeam {
+  playerId: string;
+  teamId?: string;
+}
+/**
+ * ChooseTeam lets a player assign themselves.
+ */
+export interface ChooseTeam {
+  teamId: string;
+}
+export const PhaseIdle = "idle"; // between tossups; TossupID is the next to start
+export const PhaseReading = "reading"; // buzzing open
+export const PhaseBuzzWindow = "buzz_window"; // collecting near-simultaneous buzzes
+export const PhaseAwaitingRuling = "awaiting_ruling"; // one buzz holds the floor
+export const PhaseBonus = "bonus";
+export const PhaseTossupDead = "tossup_dead"; // every team locked out, or time expired
+export type Phase = typeof PhaseIdle | typeof PhaseReading | typeof PhaseBuzzWindow | typeof PhaseAwaitingRuling | typeof PhaseBonus | typeof PhaseTossupDead;
+export const BuzzStatusPending = "pending"; // inside the collection window
+export const BuzzStatusLost = "lost"; // another buzz in the window was earlier
+export const BuzzStatusAwaiting = "awaiting";
+export const BuzzStatusCorrect = "correct";
+export const BuzzStatusIncorrect = "incorrect";
+export const BuzzStatusNoPenalty = "no_penalty";
+export type BuzzStatus = typeof BuzzStatusPending | typeof BuzzStatusLost | typeof BuzzStatusAwaiting | typeof BuzzStatusCorrect | typeof BuzzStatusIncorrect | typeof BuzzStatusNoPenalty;
+/**
+ * BuzzView is one buzz on the current tossup. OffsetMs is milliseconds after
+ * the tossup started, on the server's adjudication clock.
+ */
+export interface BuzzView {
+  id: string;
+  playerId: string;
+  teamId: string;
+  offsetMs: number /* float64 */;
+  status: BuzzStatus;
+  power: boolean; // before the power mark
+  interrupt: boolean; // before reading finished
+  points: number /* int */;
+}
+/**
+ * TeamView is a team and its score. In individual play every player is a
+ * team whose ID is the player's ID and whose Name is empty.
+ */
+export interface TeamView {
+  id: string;
+  name: string;
+  score: number /* int */;
+  playerIds: string[];
+}
+export interface BonusPartView {
+  ruled: boolean;
+  correct: boolean;
+  bouncebackTeamId?: string;
+}
+export interface BonusView {
+  id: string;
+  teamId: string; // the team that earned the bonus
+  parts: BonusPartView[];
+}
+export interface ProtestView {
+  tossupId: string;
+  playerId: string; // who filed it ("mod" for the moderator)
+  note: string;
+}
+/**
+ * GameView is the game portion of RoomState.
+ */
+export interface GameView {
+  phase: Phase;
+  tossupId: string;
+  tossupNumber: number /* int */;
+  powerMarked: boolean;
+  readingFinished: boolean;
+  buzzes: BuzzView[]; // current tossup, earliest first
+  lockedOut: string[]; // team IDs, or player IDs under player lockout
+  bonus?: BonusView;
+  teams: TeamView[];
+  protests: ProtestView[];
+  lastActionId?: string; // target for Undo
+  individual: boolean;
+}

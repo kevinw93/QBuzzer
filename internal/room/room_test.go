@@ -191,6 +191,10 @@ func (g *recordingGame) Handle(cmd Command) Result {
 	return Result{Changed: true}
 }
 
+func (g *recordingGame) Tick(time.Time) Result   { return Result{} }
+func (g *recordingGame) PlayerJoined(string)     {}
+func (g *recordingGame) View() protocol.GameView { return protocol.GameView{} }
+
 func (g *recordingGame) commands() []Command {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -67,8 +67,9 @@ type Room struct {
 	done           chan struct{} // closed when run returns
 
 	game      Game
-	players   []*seat // join order
-	moderator *seat   // nil until a moderator first joins
+	wake      *time.Timer // fires at the game's latest WakeAt; created stopped in run
+	players   []*seat     // join order
+	moderator *seat       // nil until a moderator first joins
 	byToken   map[string]*seat
 	byClient  map[*Client]*seat
 	nextID    int
@@ -142,6 +143,9 @@ func (r *Room) submit(ev any) error {
 func (r *Room) run(ctx context.Context, onExit func()) {
 	idle := time.NewTimer(r.cfg.IdleTimeout) // armed only while nobody is connected
 	defer idle.Stop()
+	r.wake = time.NewTimer(time.Hour)
+	r.wake.Stop()
+	defer r.wake.Stop()
 
 	defer func() {
 		for c := range r.byClient {
@@ -158,6 +162,8 @@ func (r *Room) run(ctx context.Context, onExit func()) {
 			return
 		case <-idle.C:
 			return
+		case now := <-r.wake.C:
+			r.applyGame(nil, 0, r.game.Tick(now))
 		case ev := <-r.inbox:
 			wasEmpty := len(r.byClient) == 0
 			r.handle(ev)
@@ -251,6 +257,7 @@ func (r *Room) seatFor(j protocol.Join) (*seat, error) {
 		s := &seat{id: "p" + strconv.Itoa(r.nextID), role: protocol.RolePlayer, name: name, token: rand.Text()}
 		r.players = append(r.players, s)
 		r.byToken[s.token] = s
+		r.game.PlayerJoined(s.id)
 		return s, nil
 	}
 	return nil, fmt.Errorf("unknown role %q", j.Role)
@@ -284,14 +291,15 @@ func (r *Room) handleMessage(s *seat, in Incoming) {
 		}
 	case protocol.Pong:
 		// Clock sync (B5).
-	case protocol.Buzz:
+	case protocol.Buzz, protocol.ChooseTeam:
 		if s.role != protocol.RolePlayer {
-			r.sendError(s, in.Seq, protocol.ErrCodeForbidden, "only players can buzz")
+			r.sendError(s, in.Seq, protocol.ErrCodeForbidden, "players only")
 			return
 		}
 		r.toGame(s, in)
 	case protocol.StartTossup, protocol.MarkPower, protocol.ReadingFinished,
-		protocol.Rule, protocol.Undo, protocol.Next, protocol.Protest:
+		protocol.Rule, protocol.Undo, protocol.Next, protocol.Protest,
+		protocol.RuleBonus, protocol.CreateTeam, protocol.AssignTeam:
 		if s.role != protocol.RoleModerator {
 			r.sendError(s, in.Seq, protocol.ErrCodeForbidden, "moderators only")
 			return
@@ -304,10 +312,20 @@ func (r *Room) handleMessage(s *seat, in Incoming) {
 
 func (r *Room) toGame(s *seat, in Incoming) {
 	res := r.game.Handle(Command{PlayerID: s.id, Role: s.role, Msg: in.Msg, ReceivedAt: in.ReceivedAt})
-	if res.Reject != nil {
+	r.applyGame(s, in.Seq, res)
+}
+
+// applyGame sends a game Result. from is nil for ticks, which never reject.
+func (r *Room) applyGame(from *seat, seq uint64, res Result) {
+	if res.WakeAt.IsZero() {
+		r.wake.Stop()
+	} else {
+		r.wake.Reset(time.Until(res.WakeAt)) // a past WakeAt fires immediately
+	}
+	if res.Reject != nil && from != nil {
 		rej := *res.Reject
-		rej.Seq = in.Seq
-		if !r.sendTo(s, encode(protocol.MsgError, rej)) {
+		rej.Seq = seq
+		if !r.sendTo(from, encode(protocol.MsgError, rej)) {
 			res.Changed = true // the sender was dropped; others must see it
 		}
 	}
@@ -388,6 +406,7 @@ func (r *Room) snapshot() protocol.RoomState {
 		Code:               r.code,
 		ModeratorConnected: r.moderator != nil && r.moderator.client != nil,
 		Players:            players,
+		Game:               r.game.View(),
 	}
 }
 

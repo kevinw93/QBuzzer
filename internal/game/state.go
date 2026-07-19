@@ -1,0 +1,191 @@
+package game
+
+import (
+	"maps"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/kevinw93/QBuzzer/internal/protocol"
+)
+
+type buzz struct {
+	id, player, team string
+	at               time.Time
+	status           protocol.BuzzStatus
+	power, interrupt bool
+	points           int
+}
+
+type team struct {
+	id, name string
+}
+
+type bonus struct {
+	id, team string
+	parts    []protocol.BonusPartView
+}
+
+// state is plain data. clone must deep-copy every slice and map, because a
+// command is applied to a clone and discarded if it fails.
+type state struct {
+	phase      protocol.Phase
+	tossupNum  int // the current tossup, or the next to start when idle
+	startedAt  time.Time
+	powerAt    time.Time // zero until marked
+	finishedAt time.Time // zero until reading finished
+	windowEnds time.Time
+	buzzes     []buzz
+	locked     map[string]bool // lockout keys: team IDs, or player IDs under LockoutPlayer
+	bonus      *bonus
+
+	players    []string          // join order
+	playerTeam map[string]string // team mode only
+	teams      []team
+	scores     map[string]int // by team ID (player ID in individual play)
+	protests   []protocol.ProtestView
+
+	nextBuzz, nextTeam int
+	lastAction         int // event ID of the latest undoable action; 0 if none
+}
+
+func newState() state {
+	return state{
+		phase:      protocol.PhaseIdle,
+		tossupNum:  1,
+		locked:     map[string]bool{},
+		playerTeam: map[string]string{},
+		scores:     map[string]int{},
+	}
+}
+
+func (s state) clone() state {
+	c := s
+	c.buzzes = slices.Clone(s.buzzes)
+	c.locked = maps.Clone(s.locked)
+	if s.bonus != nil {
+		b := *s.bonus
+		b.parts = slices.Clone(s.bonus.parts)
+		c.bonus = &b
+	}
+	c.players = slices.Clone(s.players)
+	c.playerTeam = maps.Clone(s.playerTeam)
+	c.teams = slices.Clone(s.teams)
+	c.scores = maps.Clone(s.scores)
+	c.protests = slices.Clone(s.protests)
+	return c
+}
+
+func tossupID(n int) string { return "t" + strconv.Itoa(n) }
+
+func (s *state) tossupID() string { return tossupID(s.tossupNum) }
+
+func (s *state) hasPlayer(id string) bool { return slices.Contains(s.players, id) }
+
+func (s *state) hasTeam(id string) bool {
+	return slices.ContainsFunc(s.teams, func(t team) bool { return t.id == id })
+}
+
+// teamOf returns the scoring team for a player, or "" if they have none.
+func (s *state) teamOf(r Ruleset, player string) string {
+	if r.Individual {
+		return player
+	}
+	return s.playerTeam[player]
+}
+
+func lockKey(r Ruleset, b buzz) string {
+	if r.Lockout == LockoutPlayer && !r.Individual {
+		return b.player
+	}
+	return b.team
+}
+
+// allLockedOut reports whether nobody eligible is left to buzz.
+func (s *state) allLockedOut(r Ruleset) bool {
+	for _, p := range s.players {
+		t := s.teamOf(r, p)
+		if t == "" {
+			continue
+		}
+		key := t
+		if r.Lockout == LockoutPlayer && !r.Individual {
+			key = p
+		}
+		if !s.locked[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *state) awaiting() *buzz {
+	for i := range s.buzzes {
+		if s.buzzes[i].status == protocol.BuzzStatusAwaiting {
+			return &s.buzzes[i]
+		}
+	}
+	return nil
+}
+
+// endTossup moves to Idle with the next tossup ready.
+func (s *state) endTossup() {
+	s.phase = protocol.PhaseIdle
+	s.tossupNum++
+	s.startedAt, s.powerAt, s.finishedAt, s.windowEnds = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	s.buzzes = nil
+	s.locked = map[string]bool{}
+	s.bonus = nil
+}
+
+func (s *state) view(r Ruleset) protocol.GameView {
+	v := protocol.GameView{
+		Phase:           s.phase,
+		TossupID:        s.tossupID(),
+		TossupNumber:    s.tossupNum,
+		PowerMarked:     !s.powerAt.IsZero(),
+		ReadingFinished: !s.finishedAt.IsZero(),
+		Buzzes:          make([]protocol.BuzzView, 0, len(s.buzzes)),
+		LockedOut:       slices.Sorted(maps.Keys(s.locked)),
+		Teams:           []protocol.TeamView{},
+		Protests:        slices.Clone(s.protests),
+		Individual:      r.Individual,
+	}
+	if v.LockedOut == nil {
+		v.LockedOut = []string{}
+	}
+	if v.Protests == nil {
+		v.Protests = []protocol.ProtestView{}
+	}
+	for _, b := range s.buzzes {
+		v.Buzzes = append(v.Buzzes, protocol.BuzzView{
+			ID: b.id, PlayerID: b.player, TeamID: b.team,
+			OffsetMs: float64(b.at.Sub(s.startedAt).Microseconds()) / 1000,
+			Status:   b.status, Power: b.power, Interrupt: b.interrupt, Points: b.points,
+		})
+	}
+	if s.bonus != nil {
+		v.Bonus = &protocol.BonusView{ID: s.bonus.id, TeamID: s.bonus.team, Parts: slices.Clone(s.bonus.parts)}
+	}
+	if r.Individual {
+		for _, p := range s.players {
+			v.Teams = append(v.Teams, protocol.TeamView{ID: p, Score: s.scores[p], PlayerIDs: []string{p}})
+		}
+	} else {
+		for _, t := range s.teams {
+			members := []string{}
+			for _, p := range s.players {
+				if s.playerTeam[p] == t.id {
+					members = append(members, p)
+				}
+			}
+			v.Teams = append(v.Teams, protocol.TeamView{ID: t.id, Name: t.name, Score: s.scores[t.id], PlayerIDs: members})
+		}
+	}
+	if s.lastAction != 0 {
+		v.LastActionID = actionID(s.lastAction)
+	}
+	return v
+}
+
+func actionID(eventID int) string { return "a" + strconv.Itoa(eventID) }

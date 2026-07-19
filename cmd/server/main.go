@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kevinw93/QBuzzer/internal/game"
 	"github.com/kevinw93/QBuzzer/internal/httpapi"
 	"github.com/kevinw93/QBuzzer/internal/room"
 	"github.com/kevinw93/QBuzzer/web"
@@ -33,7 +34,9 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hub := room.NewHub(ctx, room.DefaultConfig(), log)
+	cfg := room.DefaultConfig()
+	cfg.NewGame = func() room.Game { return game.New(game.Standard()) }
+	hub := room.NewHub(ctx, cfg, log)
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           httpapi.New(hub, web.Assets(), log),

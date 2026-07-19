@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"go.uber.org/goleak"
 
+	"github.com/kevinw93/QBuzzer/internal/game"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
@@ -429,4 +430,34 @@ func TestCreateRoomAtLimit(t *testing.T) {
 			t.Errorf("request %d: status %d, want %d", i, resp.StatusCode, want)
 		}
 	}
+}
+
+func TestTossupOverWebSockets(t *testing.T) {
+	e := newEnv(t, func(c *room.Config) {
+		c.NewGame = func() room.Game { return game.New(game.Practice()) }
+	})
+	r := e.createRoom(t)
+	mod, _ := e.join(t, r.Code, protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Token: r.ModeratorToken})
+	alice, w := e.join(t, r.Code, player("Alice", ""))
+
+	send(t, mod, protocol.MsgStartTossup, 1, protocol.StartTossup{TossupID: "t1"})
+	stateUntil(t, alice, func(s protocol.RoomState) bool { return s.Game.Phase == protocol.PhaseReading })
+	send(t, alice, protocol.MsgBuzz, 1, protocol.Buzz{TossupID: "t1"})
+
+	locked := readUntil(t, mod, protocol.MsgBuzzLocked, func(protocol.BuzzLocked) bool { return true })
+	if locked.PlayerID != w.PlayerID {
+		t.Fatalf("locked = %+v", locked)
+	}
+	var buzzID string
+	stateUntil(t, mod, func(s protocol.RoomState) bool {
+		if s.Version < locked.Version || s.Game.Phase != protocol.PhaseAwaitingRuling {
+			return false
+		}
+		buzzID = s.Game.Buzzes[0].ID
+		return true
+	})
+	send(t, mod, protocol.MsgRule, 2, protocol.Rule{BuzzID: buzzID, Result: protocol.RulingCorrect})
+	stateUntil(t, alice, func(s protocol.RoomState) bool {
+		return s.Game.Phase == protocol.PhaseIdle && len(s.Game.Teams) == 1 && s.Game.Teams[0].Score == 15
+	})
 }
