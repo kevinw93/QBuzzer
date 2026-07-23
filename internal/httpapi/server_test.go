@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"go.uber.org/goleak"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/game"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
@@ -27,6 +31,7 @@ const timeout = 2 * time.Second
 type env struct {
 	ts     *httptest.Server
 	hub    *room.Hub
+	clk    clock.Server
 	cancel context.CancelFunc
 }
 
@@ -39,14 +44,14 @@ func newEnv(t *testing.T, mod func(*room.Config)) *env {
 		mod(&cfg)
 	}
 	hub := room.NewHub(ctx, cfg, log)
-	s := &Server{hub: hub, log: log, joinTimeout: 200 * time.Millisecond}
+	s := &Server{hub: hub, log: log, clk: clock.NewServer(), joinTimeout: 200 * time.Millisecond}
 	ts := httptest.NewServer(s.handler(fstest.MapFS{"index.html": {Data: []byte("<h1>QBuzzer</h1>")}}))
 	t.Cleanup(func() {
 		cancel()
 		hub.Wait()
 		ts.Close()
 	})
-	return &env{ts: ts, hub: hub, cancel: cancel}
+	return &env{ts: ts, hub: hub, clk: s.clk, cancel: cancel}
 }
 
 func (e *env) createRoom(t *testing.T) protocol.CreateRoomResponse {
@@ -460,4 +465,78 @@ func TestTossupOverWebSockets(t *testing.T) {
 	stateUntil(t, alice, func(s protocol.RoomState) bool {
 		return s.Game.Phase == protocol.PhaseIdle && len(s.Game.Teams) == 1 && s.Game.Teams[0].Score == 15
 	})
+}
+
+type captureGame struct {
+	mu   sync.Mutex
+	cmds []room.Command
+}
+
+func (g *captureGame) Handle(cmd room.Command) room.Result {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cmds = append(g.cmds, cmd)
+	return room.Result{}
+}
+func (g *captureGame) Tick(time.Time) room.Result { return room.Result{} }
+func (g *captureGame) PlayerJoined(string)        {}
+func (g *captureGame) View() protocol.GameView    { return protocol.GameView{} }
+
+func (g *captureGame) commands() []room.Command {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]room.Command(nil), g.cmds...)
+}
+
+// A real client whose clock runs 5 s ahead of the server's answers pings; its
+// buzz must reach the game with an estimate whose bound contains that offset.
+func TestClockSyncOverWebSockets(t *testing.T) {
+	g := &captureGame{}
+	e := newEnv(t, func(c *room.Config) { c.NewGame = func() room.Game { return g } })
+	conn, _ := e.join(t, e.createRoom(t).Code, player("Alice", ""))
+
+	const ahead = 5000.0
+	clientNow := func() float64 { return e.clk.Now() + ahead }
+	var pongs atomic.Int32
+	done := make(chan struct{})
+	go func() { // answers pings like the browser will
+		defer close(done)
+		for {
+			_, data, err := conn.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var env protocol.Envelope
+			if json.Unmarshal(data, &env) != nil || env.Type != protocol.MsgPing {
+				continue
+			}
+			var p protocol.Ping
+			_ = json.Unmarshal(env.Payload, &p)
+			recv := clientNow()
+			b, _ := protocol.EncodeClient(protocol.MsgPong, 0, protocol.Pong{PingID: p.ID, ClientRecvMs: recv, ClientSendMs: clientNow()})
+			if conn.Write(context.Background(), websocket.MessageText, b) == nil {
+				pongs.Add(1)
+			}
+		}
+	}()
+
+	time.Sleep(1200 * time.Millisecond) // the join burst
+	send(t, conn, protocol.MsgBuzz, 1, protocol.Buzz{TossupID: "t1", ClientTimeMs: clientNow()})
+	deadline := time.Now().Add(timeout)
+	for len(g.commands()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cmds := g.commands()
+	if len(cmds) != 1 {
+		t.Fatalf("game got %d commands", len(cmds))
+	}
+	est := cmds[0].Clock
+	if !cmds[0].ClockOK || est.Samples < 5 || pongs.Load() < 5 {
+		t.Fatalf("estimate %+v (ok=%v) after %d pongs", est, cmds[0].ClockOK, pongs.Load())
+	}
+	if err := math.Abs(est.Offset - ahead); err > est.Bound || est.Bound > 10 {
+		t.Errorf("estimate %+v: error %.3f ms", est, err)
+	}
+	conn.CloseNow()
+	<-done
 }

@@ -12,7 +12,7 @@ import "encoding/json"
 const ProtocolVersion = 1
 
 // Envelope wraps every WebSocket message. Seq is set by clients on every
-// message except join and strictly increases for the lifetime of a session,
+// message except join and pong, and strictly increases for the lifetime of a session,
 // across reconnects. Servers never set it.
 type Envelope struct {
 	Type    MsgType         `json:"type"`

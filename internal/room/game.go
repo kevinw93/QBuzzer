@@ -3,6 +3,7 @@ package room
 import (
 	"time"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 )
 
@@ -25,6 +26,8 @@ type Command struct {
 	Role       protocol.Role
 	Msg        any // protocol.Buzz, protocol.Rule, ...
 	ReceivedAt time.Time
+	Clock      clock.Estimate // sender's clock estimate; valid only if ClockOK
+	ClockOK    bool
 }
 
 // Result tells the room what to send after a Command or Tick.

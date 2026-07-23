@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
@@ -17,12 +18,13 @@ import (
 type Server struct {
 	hub         *room.Hub
 	log         *slog.Logger
+	clk         clock.Server
 	joinTimeout time.Duration
 }
 
 // New returns the application handler. assets is the built frontend.
 func New(hub *room.Hub, assets fs.FS, log *slog.Logger) http.Handler {
-	s := &Server{hub: hub, log: log, joinTimeout: defaultJoinTimeout}
+	s := &Server{hub: hub, log: log, clk: clock.NewServer(), joinTimeout: defaultJoinTimeout}
 	return s.handler(assets)
 }
 

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 )
 
@@ -25,6 +26,8 @@ type Incoming struct {
 	Msg        any   // a protocol payload by value, e.g. protocol.Buzz
 	Err        error // decode or validation failure
 	ReceivedAt time.Time
+	Clock      clock.Estimate // the connection's clock estimate when the message was read
+	ClockOK    bool           // false until the first ping exchange completes
 }
 
 type (
@@ -289,8 +292,6 @@ func (r *Room) handleMessage(s *seat, in Incoming) {
 			s.name = name
 			r.broadcastState()
 		}
-	case protocol.Pong:
-		// Clock sync (B5).
 	case protocol.Buzz, protocol.ChooseTeam:
 		if s.role != protocol.RolePlayer {
 			r.sendError(s, in.Seq, protocol.ErrCodeForbidden, "players only")
@@ -311,7 +312,9 @@ func (r *Room) handleMessage(s *seat, in Incoming) {
 }
 
 func (r *Room) toGame(s *seat, in Incoming) {
-	res := r.game.Handle(Command{PlayerID: s.id, Role: s.role, Msg: in.Msg, ReceivedAt: in.ReceivedAt})
+	res := r.game.Handle(Command{
+		PlayerID: s.id, Role: s.role, Msg: in.Msg, ReceivedAt: in.ReceivedAt, Clock: in.Clock, ClockOK: in.ClockOK,
+	})
 	r.applyGame(s, in.Seq, res)
 }
 

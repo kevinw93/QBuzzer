@@ -23,7 +23,7 @@ var clientSpecs = []Spec{
 	{MsgJoin, Join{}, false},
 	{MsgSetName, SetName{}, true},
 	{MsgBuzz, Buzz{}, true},
-	{MsgPong, Pong{}, true},
+	{MsgPong, Pong{}, false}, // consumed by the connection, never resent, so no seq
 	{MsgStartTossup, StartTossup{}, true},
 	{MsgMarkPower, MarkPower{}, true},
 	{MsgReadingFinished, ReadingFinished{}, true},

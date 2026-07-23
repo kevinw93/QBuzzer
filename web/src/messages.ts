@@ -6,7 +6,7 @@ export type ClientMessage =
   | { type: 'join'; payload: p.Join }
   | { type: 'set_name'; seq: number; payload: p.SetName }
   | { type: 'buzz'; seq: number; payload: p.Buzz }
-  | { type: 'pong'; seq: number; payload: p.Pong }
+  | { type: 'pong'; payload: p.Pong }
   | { type: 'start_tossup'; seq: number; payload: p.StartTossup }
   | { type: 'mark_power'; seq: number; payload: p.MarkPower }
   | { type: 'reading_finished'; seq: number; payload: p.ReadingFinished }

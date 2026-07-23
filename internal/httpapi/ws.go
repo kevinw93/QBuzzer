@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
@@ -22,8 +23,8 @@ const (
 	defaultJoinTimeout = 5 * time.Second
 )
 
-// joinRoom runs a reader (this goroutine), a writer, and a keepalive per
-// connection. Only these goroutines touch the socket; only the room touches
+// joinRoom runs a reader (this goroutine), a writer, a pinger, and a
+// keepalive per connection. Only these goroutines touch the socket; only the room touches
 // room state.
 func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 	rm, ok := s.hub.Get(r.PathValue("code"))
@@ -51,11 +52,14 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("client joined", "room", rm.Code(), "role", join.Role)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	cs := clock.NewSession(clock.DefaultConfig())
+	started := make(chan struct{}) // closed after the first write, which is always the Welcome
 	var wg sync.WaitGroup
-	wg.Go(func() { writeLoop(ctx, conn, c) })
+	wg.Go(func() { writeLoop(ctx, conn, c, started) })
+	wg.Go(func() { s.pinger(ctx, conn, cs, started) })
 	wg.Go(func() { keepalive(ctx, conn) })
 
-	readLoop(ctx, conn, rm, c)
+	s.readLoop(ctx, conn, rm, c, cs)
 
 	rm.Leave(c)
 	cancel() // stops the writer if the room exited and will never close c
@@ -100,7 +104,7 @@ func (s *Server) readJoin(conn *websocket.Conn) (protocol.Join, bool) {
 	return msg.(protocol.Join), true
 }
 
-func readLoop(ctx context.Context, conn *websocket.Conn, rm *room.Room, c *room.Client) {
+func (s *Server) readLoop(ctx context.Context, conn *websocket.Conn, rm *room.Room, c *room.Client, cs *clock.Session) {
 	for {
 		typ, data, err := conn.Read(ctx)
 		if err != nil {
@@ -120,13 +124,20 @@ func readLoop(ctx context.Context, conn *websocket.Conn, rm *room.Room, c *room.
 			return
 		}
 		msg, err := protocol.DecodeClient(env)
-		if err := rm.Deliver(c, room.Incoming{Seq: env.Seq, Msg: msg, Err: err, ReceivedAt: receivedAt}); err != nil {
+		if p, ok := msg.(protocol.Pong); ok {
+			_ = cs.Pong(p.PingID, p.ClientRecvMs, p.ClientSendMs, s.clk.At(receivedAt)) // bad pongs are just discarded samples
+			continue
+		}
+		est, estOK := cs.Estimate(s.clk.At(receivedAt))
+		in := room.Incoming{Seq: env.Seq, Msg: msg, Err: err, ReceivedAt: receivedAt, Clock: est, ClockOK: estOK}
+		if err := rm.Deliver(c, in); err != nil {
 			return
 		}
 	}
 }
 
-func writeLoop(ctx context.Context, conn *websocket.Conn, c *room.Client) {
+func writeLoop(ctx context.Context, conn *websocket.Conn, c *room.Client, started chan<- struct{}) {
+	first := true
 	for {
 		msg, err := c.Next(ctx)
 		if errors.Is(err, room.ErrClientClosed) {
@@ -144,6 +155,44 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, c *room.Client) {
 			conn.CloseNow() // unblocks the reader
 			return
 		}
+		if first {
+			close(started)
+			first = false
+		}
+	}
+}
+
+// pinger runs the clock-sync exchange. T1 is stamped immediately before the
+// write; if the write waits behind another, that sample just has a larger RTT
+// and loses to better ones.
+func (s *Server) pinger(ctx context.Context, conn *websocket.Conn, cs *clock.Session, started <-chan struct{}) {
+	select {
+	case <-started:
+	case <-ctx.Done():
+		return
+	}
+	t := time.NewTimer(0)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if id, ok := cs.Ping(s.clk.Now()); ok {
+			msg, err := protocol.Encode(protocol.MsgPing, protocol.Ping{ID: id})
+			if err != nil {
+				panic(err)
+			}
+			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+			err = conn.Write(wctx, websocket.MessageText, msg)
+			cancel()
+			if err != nil {
+				conn.CloseNow()
+				return
+			}
+		}
+		t.Reset(time.Duration(cs.NextInterval() * float64(time.Millisecond)))
 	}
 }
 
