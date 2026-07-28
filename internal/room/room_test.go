@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 )
 
@@ -178,6 +179,7 @@ func namesAre(want string) func(protocol.RoomState) bool {
 type recordingGame struct {
 	mu      sync.Mutex
 	cmds    []Command
+	clocks  []string // player IDs, one per PlayerClock call
 	respond func(Command) Result
 }
 
@@ -191,8 +193,13 @@ func (g *recordingGame) Handle(cmd Command) Result {
 	return Result{Changed: true}
 }
 
-func (g *recordingGame) Tick(time.Time) Result   { return Result{} }
-func (g *recordingGame) PlayerJoined(string)     {}
+func (g *recordingGame) Tick(time.Time) Result { return Result{} }
+func (g *recordingGame) PlayerJoined(string)   {}
+func (g *recordingGame) PlayerClock(id string, est clock.Estimate, _ time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.clocks = append(g.clocks, id)
+}
 func (g *recordingGame) View() protocol.GameView { return protocol.GameView{} }
 
 func (g *recordingGame) commands() []Command {
@@ -727,6 +734,24 @@ func TestHundredConcurrentBuzzers(t *testing.T) {
 			if string(o.last) != string(final) {
 				t.Errorf("observer %d ended on a different state", i)
 			}
+		}
+	})
+}
+
+func TestClockUpdatesReachGameForPlayersOnly(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := &recordingGame{}
+		r := newTestRoom(t, withGame(g))
+		p, w := join(t, r, "Alice")
+		m := joinModerator(t, r)
+		r.UpdateClock(p, clock.Estimate{RTT: 30}, time.Now())
+		r.UpdateClock(m, clock.Estimate{RTT: 30}, time.Now())
+		r.UpdateClock(r.NewClient(), clock.Estimate{RTT: 30}, time.Now()) // never joined
+		synctest.Wait()
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if len(g.clocks) != 1 || g.clocks[0] != w.PlayerID {
+			t.Errorf("clock updates = %v, want only %s", g.clocks, w.PlayerID)
 		}
 	})
 }

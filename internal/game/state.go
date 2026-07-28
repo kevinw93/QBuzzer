@@ -6,14 +6,19 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kevinw93/QBuzzer/internal/fair"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 )
 
 type buzz struct {
 	id, player, team string
-	at               time.Time
+	at               time.Time // judged press time
+	arrived          time.Time
+	correction       float64 // ms
+	clamped          bool
 	status           protocol.BuzzStatus
-	power, interrupt bool
+	ruled            bool
+	power, interrupt bool // decided at ruling
 	points           int
 }
 
@@ -101,6 +106,15 @@ func lockKey(r Ruleset, b buzz) string {
 	return b.team
 }
 
+// eligible reports whether player could buzz now: on a team and not locked out.
+func (s *state) eligible(r Ruleset, player string) bool {
+	t := s.teamOf(r, player)
+	if t == "" {
+		return false
+	}
+	return !s.locked[lockKey(r, buzz{player: player, team: t})]
+}
+
 // allLockedOut reports whether nobody eligible is left to buzz.
 func (s *state) allLockedOut(r Ruleset) bool {
 	for _, p := range s.players {
@@ -158,11 +172,24 @@ func (s *state) view(r Ruleset) protocol.GameView {
 		v.Protests = []protocol.ProtestView{}
 	}
 	for _, b := range s.buzzes {
-		v.Buzzes = append(v.Buzzes, protocol.BuzzView{
+		bv := protocol.BuzzView{
 			ID: b.id, PlayerID: b.player, TeamID: b.team,
-			OffsetMs: float64(b.at.Sub(s.startedAt).Microseconds()) / 1000,
-			Status:   b.status, Power: b.power, Interrupt: b.interrupt, Points: b.points,
-		})
+			OffsetMs: msBetween(s.startedAt, b.at), CorrectionMs: b.correction, Clamped: b.clamped,
+			Status: b.status, PowerHint: s.powerHint(r, b), InterruptHint: s.interruptHint(r, b),
+			Power: b.power, Interrupt: b.interrupt, Points: b.points,
+		}
+		if !b.ruled {
+			bv.Power, bv.Interrupt = bv.PowerHint == protocol.HintYes, bv.InterruptHint == protocol.HintYes
+		}
+		if !s.powerAt.IsZero() {
+			gap := msBetween(s.powerAt, b.at)
+			bv.PowerGapMs = &gap
+		}
+		if !s.finishedAt.IsZero() {
+			gap := msBetween(s.finishedAt, b.at)
+			bv.InterruptGapMs = &gap
+		}
+		v.Buzzes = append(v.Buzzes, bv)
 	}
 	if s.bonus != nil {
 		v.Bonus = &protocol.BonusView{ID: s.bonus.id, TeamID: s.bonus.team, Parts: slices.Clone(s.bonus.parts)}
@@ -189,3 +216,27 @@ func (s *state) view(r Ruleset) protocol.GameView {
 }
 
 func actionID(eventID int) string { return "a" + strconv.Itoa(eventID) }
+
+func msBetween(from, to time.Time) float64 { return float64(to.Sub(from).Microseconds()) / 1000 }
+
+// powerHint is empty when the rules have no powers. An unmarked power means
+// reading hasn't reached it, so every buzz so far is a power.
+func (s *state) powerHint(r Ruleset, b buzz) protocol.Hint {
+	if r.PowerPoints == 0 {
+		return ""
+	}
+	return markHint(r, b, s.powerAt)
+}
+
+func (s *state) interruptHint(r Ruleset, b buzz) protocol.Hint {
+	return markHint(r, b, s.finishedAt)
+}
+
+func markHint(r Ruleset, b buzz, mark time.Time) protocol.Hint {
+	if mark.IsZero() {
+		return protocol.HintYes
+	}
+	return fair.Classify(msBetween(mark, b.at), 0, durMs(r.AudioDelayMax))
+}
+
+func durMs(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

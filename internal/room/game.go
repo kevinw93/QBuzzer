@@ -17,6 +17,8 @@ type Game interface {
 	// PlayerJoined is called once per new player seat, before the state that
 	// includes it is broadcast.
 	PlayerJoined(playerID string)
+	// PlayerClock reports a player's latest clock estimate, taken at at.
+	PlayerClock(playerID string, est clock.Estimate, at time.Time)
 	View() protocol.GameView
 }
 
@@ -28,6 +30,7 @@ type Command struct {
 	ReceivedAt time.Time
 	Clock      clock.Estimate // sender's clock estimate; valid only if ClockOK
 	ClockOK    bool
+	ServerMs   float64 // ReceivedAt on the clock.Server scale
 }
 
 // Result tells the room what to send after a Command or Tick.
@@ -49,6 +52,7 @@ func (unimplementedGame) Handle(Command) Result {
 	}}
 }
 
-func (unimplementedGame) Tick(time.Time) Result   { return Result{} }
-func (unimplementedGame) PlayerJoined(string)     {}
-func (unimplementedGame) View() protocol.GameView { return protocol.GameView{} }
+func (unimplementedGame) Tick(time.Time) Result                         { return Result{} }
+func (unimplementedGame) PlayerJoined(string)                           {}
+func (unimplementedGame) PlayerClock(string, clock.Estimate, time.Time) {}
+func (unimplementedGame) View() protocol.GameView                       { return protocol.GameView{} }

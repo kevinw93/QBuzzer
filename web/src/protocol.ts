@@ -103,11 +103,17 @@ export interface Pong {
 export interface StartTossup {
   tossupId: string;
 }
+/**
+ * MarkPower and ReadingFinished carry the moderator's clock so they are
+ * judged on the same timeline as buzzes.
+ */
 export interface MarkPower {
   tossupId: string;
+  clientTimeMs?: number /* float64 */;
 }
 export interface ReadingFinished {
   tossupId: string;
+  clientTimeMs?: number /* float64 */;
 }
 export interface Next {
   tossupId: string;
@@ -117,11 +123,15 @@ export const RulingIncorrect = "incorrect"; // neg if the buzz interrupted, else
 export const RulingNoPenalty = "no_penalty"; // incorrect, never negged
 export type Ruling = typeof RulingCorrect | typeof RulingIncorrect | typeof RulingNoPenalty;
 /**
- * Rule is rejected unless BuzzID is the buzz awaiting a ruling.
+ * Rule is rejected unless BuzzID is the buzz awaiting a ruling. Power (for a
+ * correct answer) and Neg (for an incorrect one) override the timing hint,
+ * and are required when the hint is close.
  */
 export interface Rule {
   buzzId: string;
   result: Ruling;
+  power?: boolean;
+  neg?: boolean;
 }
 /**
  * Undo is rejected unless ActionID is the most recent undoable action.
@@ -264,17 +274,34 @@ export const BuzzStatusIncorrect = "incorrect";
 export const BuzzStatusNoPenalty = "no_penalty";
 export type BuzzStatus = typeof BuzzStatusPending | typeof BuzzStatusLost | typeof BuzzStatusAwaiting | typeof BuzzStatusCorrect | typeof BuzzStatusIncorrect | typeof BuzzStatusNoPenalty;
 /**
- * BuzzView is one buzz on the current tossup. OffsetMs is milliseconds after
- * the tossup started, on the server's adjudication clock.
+ * Hint is the timing evidence for a power or an interrupt. Close means the
+ * press came within the possible audio delay after the moderator's mark, so
+ * only the moderator can judge it.
+ */
+export const HintYes = "yes";
+export const HintNo = "no";
+export const HintClose = "close";
+export type Hint = typeof HintYes | typeof HintNo | typeof HintClose;
+/**
+ * BuzzView is one buzz on the current tossup. OffsetMs is when it was judged
+ * pressed, in milliseconds after the tossup started; CorrectionMs is how much
+ * earlier than its arrival that is. Gaps are press minus mark, absent until
+ * the mark exists.
  */
 export interface BuzzView {
   id: string;
   playerId: string;
   teamId: string;
   offsetMs: number /* float64 */;
+  correctionMs: number /* float64 */;
+  clamped: boolean; // the client's timestamp was implausible
   status: BuzzStatus;
-  power: boolean; // before the power mark
-  interrupt: boolean; // before reading finished
+  powerHint?: Hint; // empty when the rules have no powers
+  powerGapMs?: number /* float64 */;
+  interruptHint: Hint;
+  interruptGapMs?: number /* float64 */;
+  power: boolean; // as ruled; the hint until then
+  interrupt: boolean; // as ruled; the hint until then
   points: number /* int */;
 }
 /**

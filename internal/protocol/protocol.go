@@ -104,12 +104,16 @@ type StartTossup struct {
 	TossupID string `json:"tossupId"`
 }
 
+// MarkPower and ReadingFinished carry the moderator's clock so they are
+// judged on the same timeline as buzzes.
 type MarkPower struct {
-	TossupID string `json:"tossupId"`
+	TossupID     string  `json:"tossupId"`
+	ClientTimeMs float64 `json:"clientTimeMs,omitempty"`
 }
 
 type ReadingFinished struct {
-	TossupID string `json:"tossupId"`
+	TossupID     string  `json:"tossupId"`
+	ClientTimeMs float64 `json:"clientTimeMs,omitempty"`
 }
 
 type Next struct {
@@ -124,10 +128,14 @@ const (
 	RulingNoPenalty Ruling = "no_penalty" // incorrect, never negged
 )
 
-// Rule is rejected unless BuzzID is the buzz awaiting a ruling.
+// Rule is rejected unless BuzzID is the buzz awaiting a ruling. Power (for a
+// correct answer) and Neg (for an incorrect one) override the timing hint,
+// and are required when the hint is close.
 type Rule struct {
 	BuzzID string `json:"buzzId"`
 	Result Ruling `json:"result"`
+	Power  *bool  `json:"power,omitempty"`
+	Neg    *bool  `json:"neg,omitempty"`
 }
 
 // Undo is rejected unless ActionID is the most recent undoable action.
@@ -286,17 +294,36 @@ const (
 	BuzzStatusNoPenalty BuzzStatus = "no_penalty"
 )
 
-// BuzzView is one buzz on the current tossup. OffsetMs is milliseconds after
-// the tossup started, on the server's adjudication clock.
+// Hint is the timing evidence for a power or an interrupt. Close means the
+// press came within the possible audio delay after the moderator's mark, so
+// only the moderator can judge it.
+type Hint string
+
+const (
+	HintYes   Hint = "yes"
+	HintNo    Hint = "no"
+	HintClose Hint = "close"
+)
+
+// BuzzView is one buzz on the current tossup. OffsetMs is when it was judged
+// pressed, in milliseconds after the tossup started; CorrectionMs is how much
+// earlier than its arrival that is. Gaps are press minus mark, absent until
+// the mark exists.
 type BuzzView struct {
-	ID        string     `json:"id"`
-	PlayerID  string     `json:"playerId"`
-	TeamID    string     `json:"teamId"`
-	OffsetMs  float64    `json:"offsetMs"`
-	Status    BuzzStatus `json:"status"`
-	Power     bool       `json:"power"`     // before the power mark
-	Interrupt bool       `json:"interrupt"` // before reading finished
-	Points    int        `json:"points"`
+	ID             string     `json:"id"`
+	PlayerID       string     `json:"playerId"`
+	TeamID         string     `json:"teamId"`
+	OffsetMs       float64    `json:"offsetMs"`
+	CorrectionMs   float64    `json:"correctionMs"`
+	Clamped        bool       `json:"clamped"` // the client's timestamp was implausible
+	Status         BuzzStatus `json:"status"`
+	PowerHint      Hint       `json:"powerHint,omitempty"` // empty when the rules have no powers
+	PowerGapMs     *float64   `json:"powerGapMs,omitempty"`
+	InterruptHint  Hint       `json:"interruptHint"`
+	InterruptGapMs *float64   `json:"interruptGapMs,omitempty"`
+	Power          bool       `json:"power"`     // as ruled; the hint until then
+	Interrupt      bool       `json:"interrupt"` // as ruled; the hint until then
+	Points         int        `json:"points"`
 }
 
 // TeamView is a team and its score. In individual play every player is a

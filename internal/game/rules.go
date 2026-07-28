@@ -25,18 +25,36 @@ type Ruleset struct {
 	Lockout         Lockout
 	BonusParts      int // 0 disables bonuses
 	BonusPartPoints int
-	Bounceback      bool          // missed bonus parts may be awarded to another team
-	BuzzWindow      time.Duration // collection window for near-simultaneous buzzes
-	DeadAfter       time.Duration // tossup dies this long after reading finishes; 0 = moderator decides
+	Bounceback      bool // missed bonus parts may be awarded to another team
+
+	// MaxBuzzWindow caps the collection window, which otherwise covers the
+	// largest possible correction among eligible players. 0 locks the first
+	// buzz immediately.
+	MaxBuzzWindow time.Duration
+	// CorrectionMargin is added to a connection's RTT to cap how much
+	// earlier than its arrival a message may be judged.
+	CorrectionMargin time.Duration
+	// AudioDelayMax is the longest plausible voice-chat delay. A press within
+	// this long after the power mark or end of reading is a close call.
+	AudioDelayMax time.Duration
+	// DeadAfter kills the tossup this long after reading finishes; 0 means
+	// the moderator decides.
+	DeadAfter time.Duration
+}
+
+func defaultTiming(r Ruleset) Ruleset {
+	r.MaxBuzzWindow = 100 * time.Millisecond
+	r.CorrectionMargin = 10 * time.Millisecond
+	r.AudioDelayMax = 300 * time.Millisecond
+	return r
 }
 
 // Standard is 15/10/-5 with three 10-point bonus parts.
 func Standard() Ruleset {
-	return Ruleset{
+	return defaultTiming(Ruleset{
 		TossupPoints: 10, PowerPoints: 15, NegPoints: -5,
 		BonusParts: 3, BonusPartPoints: 10,
-		BuzzWindow: 100 * time.Millisecond,
-	}
+	})
 }
 
 // NoPowers is 10/-5 with three 10-point bonus parts.
@@ -48,10 +66,7 @@ func NoPowers() Ruleset {
 
 // Practice is individual play with no negs and no bonuses.
 func Practice() Ruleset {
-	return Ruleset{
-		Individual: true, TossupPoints: 10, PowerPoints: 15,
-		BuzzWindow: 100 * time.Millisecond,
-	}
+	return defaultTiming(Ruleset{Individual: true, TossupPoints: 10, PowerPoints: 15})
 }
 
 func (r Ruleset) Validate() error {
@@ -68,8 +83,12 @@ func (r Ruleset) Validate() error {
 		return errors.New("bonus part points must be positive")
 	case r.Bounceback && (r.Individual || r.BonusParts == 0):
 		return errors.New("bouncebacks need teams and bonuses")
-	case r.BuzzWindow < 0 || r.BuzzWindow > 2*time.Second:
-		return errors.New("buzz window must be 0-2s")
+	case r.MaxBuzzWindow < 0 || r.MaxBuzzWindow > 2*time.Second:
+		return errors.New("max buzz window must be 0-2s")
+	case r.CorrectionMargin < 0 || r.CorrectionMargin > 100*time.Millisecond:
+		return errors.New("correction margin must be 0-100ms")
+	case r.AudioDelayMax < 0 || r.AudioDelayMax > 2*time.Second:
+		return errors.New("audio delay max must be 0-2s")
 	case r.DeadAfter < 0:
 		return errors.New("dead-after must be non-negative")
 	}

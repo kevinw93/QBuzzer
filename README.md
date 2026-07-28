@@ -28,3 +28,29 @@ The server listens on `127.0.0.1:8080`; set `QBUZZER_ADDR` to override.
 | `internal/game` | tossup/bonus state machine and scoring |
 | `internal/store` | PostgreSQL persistence |
 | `web` | React + TypeScript frontend, embedded into the binary |
+
+## Fairness
+
+Players hear the moderator over voice chat and buzz over their own networks,
+so "first to arrive" is often not "first to press". QBuzzer judges each buzz
+by the client's press timestamp converted to server time with a per-connection
+clock estimate (NTP-style ping exchanges), caps how far any client can move its
+own buzz (RTT + estimate bound + 10 ms), and waits a short adaptive window
+(the largest cap among eligible players, at most 100 ms) before locking in the
+earliest press.
+
+Simulated across mixed home, mobile, and asymmetric networks
+([full results and assumptions](docs/fairness.md), regenerate with
+`make fairness`):
+
+| | First presser wins (all tossups) | First presser wins (presses < 25 ms apart) | Lock delay |
+|---|---|---|---|
+| Arrival order | 84.2% | 62.0% | 0 ms |
+| QBuzzer | 93.7% | 83.3% | 105 ms |
+
+What's not fixed: voice-chat delay. In about half of close races, the player
+who *reacted* fastest after hearing the clue isn't the one who pressed first,
+because their audio arrived later. Measuring that needs the moderator's audio
+to go through QBuzzer (WebRTC playout timestamps), a planned stretch goal.
+Powers and negs near the moderator's marks are flagged as close calls for the
+moderator to decide rather than guessed.

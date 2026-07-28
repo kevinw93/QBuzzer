@@ -191,10 +191,17 @@ func (m Pong) Validate() error {
 }
 
 func (m StartTossup) Validate() error     { return requireID("tossupId", m.TossupID) }
-func (m MarkPower) Validate() error       { return requireID("tossupId", m.TossupID) }
-func (m ReadingFinished) Validate() error { return requireID("tossupId", m.TossupID) }
-func (m Next) Validate() error            { return requireID("tossupId", m.TossupID) }
-func (m Undo) Validate() error            { return requireID("actionId", m.ActionID) }
+func (m MarkPower) Validate() error       { return validateMark(m.TossupID, m.ClientTimeMs) }
+func (m ReadingFinished) Validate() error { return validateMark(m.TossupID, m.ClientTimeMs) }
+
+func validateMark(tossupID string, clientMs float64) error {
+	if clientMs < 0 {
+		return errors.New("clientTimeMs must be non-negative")
+	}
+	return requireID("tossupId", tossupID)
+}
+func (m Next) Validate() error { return requireID("tossupId", m.TossupID) }
+func (m Undo) Validate() error { return requireID("actionId", m.ActionID) }
 
 func (m Rule) Validate() error {
 	switch m.Result {

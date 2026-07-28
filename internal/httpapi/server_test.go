@@ -468,8 +468,9 @@ func TestTossupOverWebSockets(t *testing.T) {
 }
 
 type captureGame struct {
-	mu   sync.Mutex
-	cmds []room.Command
+	mu     sync.Mutex
+	cmds   []room.Command
+	clocks []clock.Estimate
 }
 
 func (g *captureGame) Handle(cmd room.Command) room.Result {
@@ -480,7 +481,12 @@ func (g *captureGame) Handle(cmd room.Command) room.Result {
 }
 func (g *captureGame) Tick(time.Time) room.Result { return room.Result{} }
 func (g *captureGame) PlayerJoined(string)        {}
-func (g *captureGame) View() protocol.GameView    { return protocol.GameView{} }
+func (g *captureGame) PlayerClock(id string, est clock.Estimate, _ time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.clocks = append(g.clocks, est)
+}
+func (g *captureGame) View() protocol.GameView { return protocol.GameView{} }
 
 func (g *captureGame) commands() []room.Command {
 	g.mu.Lock()

@@ -124,7 +124,7 @@ func TestGameThroughRoom(t *testing.T) {
 		}
 
 		// The room's wake timer closes the window with no further commands.
-		time.Sleep(rules.BuzzWindow + 10*time.Millisecond)
+		time.Sleep(rules.MaxBuzzWindow + 10*time.Millisecond)
 		envs := mod.drain()
 		if len(envs) != 2 || envs[0].Type != protocol.MsgBuzzLocked || envs[1].Type != protocol.MsgState {
 			t.Fatalf("after window: %d messages %+v", len(envs), envs)

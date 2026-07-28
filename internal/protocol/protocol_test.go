@@ -16,9 +16,9 @@ var samples = map[MsgType]any{
 	MsgBuzz:            Buzz{TossupID: "t3", ClientTimeMs: 1234.5},
 	MsgPong:            Pong{PingID: 9, ClientRecvMs: 100.25, ClientSendMs: 100.75},
 	MsgStartTossup:     StartTossup{TossupID: "t3"},
-	MsgMarkPower:       MarkPower{TossupID: "t3"},
+	MsgMarkPower:       MarkPower{TossupID: "t3", ClientTimeMs: 1.76e12 + 0.25},
 	MsgReadingFinished: ReadingFinished{TossupID: "t3"},
-	MsgRule:            Rule{BuzzID: "b7", Result: RulingIncorrect},
+	MsgRule:            Rule{BuzzID: "b7", Result: RulingIncorrect, Neg: new(bool)},
 	MsgUndo:            Undo{ActionID: "a12"},
 	MsgNext:            Next{TossupID: "t3"},
 	MsgProtest:         Protest{TossupID: "t3", Note: "answer was acceptable: “Gödel”"},
@@ -35,7 +35,8 @@ var samples = map[MsgType]any{
 			Phase: PhaseBonus, TossupID: "t3", TossupNumber: 3, PowerMarked: true, ReadingFinished: false,
 			Buzzes: []BuzzView{
 				{ID: "b6", PlayerID: "p2", TeamID: "T2", OffsetMs: 812.5, Status: BuzzStatusLost},
-				{ID: "b7", PlayerID: "p1", TeamID: "T1", OffsetMs: 820, Status: BuzzStatusCorrect, Power: true, Interrupt: true, Points: 15},
+				{ID: "b7", PlayerID: "p1", TeamID: "T1", OffsetMs: 820, CorrectionMs: 41.5, Status: BuzzStatusCorrect,
+					PowerHint: HintClose, PowerGapMs: ptr(12.5), InterruptHint: HintYes, Power: true, Interrupt: true, Points: 15},
 			},
 			LockedOut:    []string{"T2"},
 			Bonus:        &BonusView{ID: "B3", TeamID: "T1", Parts: []BonusPartView{{Ruled: true, Correct: true}, {Ruled: true, BouncebackTeamID: "T2"}, {}}},
@@ -298,3 +299,5 @@ func TestEffectsAreRegisteredServerMessages(t *testing.T) {
 		}
 	}
 }
+
+func ptr[T any](v T) *T { return &v }

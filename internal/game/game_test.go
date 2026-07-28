@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
@@ -22,11 +23,19 @@ type harness struct {
 	g *Game
 }
 
+// testRTT gives every test player a 100 ms correction cap (RTT + 10 ms
+// margin), so the collection window is testWindow.
+const (
+	testRTT    = 90
+	testWindow = 100 * time.Millisecond
+)
+
 func newHarness(t *testing.T, r Ruleset, players ...string) *harness {
 	t.Helper()
 	h := &harness{t: t, g: New(r)}
 	for _, p := range players {
 		h.g.PlayerJoined(p)
+		h.g.PlayerClock(p, clock.Estimate{RTT: testRTT}, t0)
 	}
 	h.checkReplay()
 	return h
@@ -142,7 +151,7 @@ func (h *harness) bonusID() string {
 func (h *harness) buzzAndLock(player string, at time.Duration) {
 	h.t.Helper()
 	h.ok(player, at, protocol.Buzz{TossupID: h.tossup()})
-	h.tick(at + Standard().BuzzWindow + tickGrace)
+	h.tick(at + testWindow + tickGrace)
 	h.phase(protocol.PhaseAwaitingRuling)
 }
 
@@ -281,7 +290,7 @@ func TestScoring(t *testing.T) {
 		{"after power mark", Standard, true, false, protocol.RulingCorrect, 10, protocol.PhaseBonus},
 		{"no powers", NoPowers, false, false, protocol.RulingCorrect, 10, protocol.PhaseBonus},
 		{"neg on interrupt", Standard, false, false, protocol.RulingIncorrect, -5, protocol.PhaseReading},
-		{"no neg after reading finished", Standard, true, true, protocol.RulingIncorrect, 0, protocol.PhaseReading},
+		{"no neg well after reading finished", Standard, true, true, protocol.RulingIncorrect, 0, protocol.PhaseReading},
 		{"no_penalty interrupt", Standard, false, false, protocol.RulingNoPenalty, 0, protocol.PhaseReading},
 	}
 	for _, tt := range tests {
@@ -292,7 +301,7 @@ func TestScoring(t *testing.T) {
 				h.ok("mod", ms(500), protocol.MarkPower{TossupID: "t1"})
 			}
 			if tt.finish {
-				h.ok("mod", ms(900), protocol.ReadingFinished{TossupID: "t1"})
+				h.ok("mod", ms(500), protocol.ReadingFinished{TossupID: "t1"})
 			}
 			h.buzzAndLock("p1", ms(1000))
 			res := h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: tt.result})
@@ -367,7 +376,7 @@ func TestNearSimultaneousBuzzes(t *testing.T) {
 		h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
 		h.ok("p1", ms(1040), protocol.Buzz{TossupID: "t1"}) // processed first
 		h.ok("p3", ms(1010), protocol.Buzz{TossupID: "t1"}) // stamped earlier
-		res := h.tick(ms(1040) + Standard().BuzzWindow + tickGrace)
+		res := h.tick(ms(1040) + testWindow + tickGrace)
 		bs := h.view().Buzzes
 		if bs[0].PlayerID != "p3" || bs[0].Status != protocol.BuzzStatusAwaiting || bs[1].Status != protocol.BuzzStatusLost {
 			t.Errorf("buzzes = %+v", bs)
@@ -432,7 +441,7 @@ func TestNearSimultaneousBuzzes(t *testing.T) {
 	})
 	t.Run("zero window locks immediately", func(t *testing.T) {
 		r := Standard()
-		r.BuzzWindow = 0
+		r.MaxBuzzWindow = 0
 		h := teams(t, r)
 		h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
 		res := h.ok("p1", ms(1000), protocol.Buzz{TossupID: "t1"})
@@ -450,13 +459,13 @@ func TestWakeAt(t *testing.T) {
 	if res := h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"}); !res.WakeAt.IsZero() {
 		t.Errorf("reading without a deadline: WakeAt = %v", res.WakeAt)
 	}
-	if res := h.ok("p1", ms(1000), protocol.Buzz{TossupID: "t1"}); !res.WakeAt.Equal(t0.Add(ms(1000) + r.BuzzWindow + tickGrace)) {
+	if res := h.ok("p1", ms(1000), protocol.Buzz{TossupID: "t1"}); !res.WakeAt.Equal(t0.Add(ms(1000) + testWindow + tickGrace)) {
 		t.Errorf("window: WakeAt = %v", res.WakeAt)
 	}
-	if res := h.tick(ms(1000) + r.BuzzWindow); res.Changed || h.view().Phase != protocol.PhaseBuzzWindow {
+	if res := h.tick(ms(1000) + testWindow); res.Changed || h.view().Phase != protocol.PhaseBuzzWindow {
 		t.Errorf("window closed before its grace period: %+v", res)
 	}
-	if res := h.tick(ms(1000) + r.BuzzWindow + tickGrace); !res.Changed || !res.WakeAt.IsZero() {
+	if res := h.tick(ms(1000) + testWindow + tickGrace); !res.Changed || !res.WakeAt.IsZero() {
 		t.Errorf("window close: %+v", res)
 	}
 	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
@@ -638,7 +647,9 @@ func TestRulesetValidation(t *testing.T) {
 		func(r *Ruleset) { r.BonusParts = protocol.MaxBonusParts + 1 },
 		func(r *Ruleset) { r.BonusPartPoints = 0 },
 		func(r *Ruleset) { r.Individual, r.Bounceback = true, true },
-		func(r *Ruleset) { r.BuzzWindow = 3 * time.Second },
+		func(r *Ruleset) { r.MaxBuzzWindow = 3 * time.Second },
+		func(r *Ruleset) { r.CorrectionMargin = time.Second },
+		func(r *Ruleset) { r.AudioDelayMax = -1 },
 		func(r *Ruleset) { r.DeadAfter = -1 },
 	}
 	for i, mutate := range bad {

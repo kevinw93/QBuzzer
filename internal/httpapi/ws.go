@@ -125,11 +125,17 @@ func (s *Server) readLoop(ctx context.Context, conn *websocket.Conn, rm *room.Ro
 		}
 		msg, err := protocol.DecodeClient(env)
 		if p, ok := msg.(protocol.Pong); ok {
-			_ = cs.Pong(p.PingID, p.ClientRecvMs, p.ClientSendMs, s.clk.At(receivedAt)) // bad pongs are just discarded samples
+			now := s.clk.At(receivedAt)
+			if cs.Pong(p.PingID, p.ClientRecvMs, p.ClientSendMs, now) == nil { // bad pongs are just discarded samples
+				if est, ok := cs.Estimate(now); ok {
+					rm.UpdateClock(c, est, receivedAt)
+				}
+			}
 			continue
 		}
-		est, estOK := cs.Estimate(s.clk.At(receivedAt))
-		in := room.Incoming{Seq: env.Seq, Msg: msg, Err: err, ReceivedAt: receivedAt, Clock: est, ClockOK: estOK}
+		now := s.clk.At(receivedAt)
+		est, estOK := cs.Estimate(now)
+		in := room.Incoming{Seq: env.Seq, Msg: msg, Err: err, ReceivedAt: receivedAt, Clock: est, ClockOK: estOK, ServerMs: now}
 		if err := rm.Deliver(c, in); err != nil {
 			return
 		}

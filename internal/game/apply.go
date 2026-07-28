@@ -11,10 +11,17 @@ import (
 // event is one accepted entry in the game log.
 type event struct {
 	id       int
-	at       time.Time
+	at       time.Time // when it happened: for buzzes and marks, the judged press time
 	player   string
 	msg      any // a protocol message, or one of the internal events below
 	reverted bool
+
+	// Buzzes only. Decided when the buzz is handled and logged, so replay
+	// never depends on clock estimates that have since changed.
+	arrived    time.Time
+	correction float64 // ms; at = arrived - correction
+	clamped    bool
+	window     time.Duration // collection window, if this buzz opens one
 }
 
 // Internal events, logged when they change state so replay is deterministic.
@@ -219,12 +226,12 @@ func (s *state) buzz(r Ruleset, e event, m protocol.Buzz) ([]protocol.Effect, er
 	if t == "" {
 		return nil, notAllowed("join a team to buzz")
 	}
-	b := buzz{player: e.player, team: t, at: e.at, status: protocol.BuzzStatusPending}
+	b := buzz{player: e.player, team: t, at: e.at, arrived: e.arrived, correction: e.correction, clamped: e.clamped, status: protocol.BuzzStatusPending}
 	if s.locked[lockKey(r, b)] {
 		return nil, notAllowed("locked out")
 	}
 	if s.phase == protocol.PhaseBuzzWindow {
-		if e.at.After(s.windowEnds) {
+		if e.arrived.After(s.windowEnds) {
 			return nil, notAllowed("buzz window closed")
 		}
 		for _, x := range s.buzzes {
@@ -240,16 +247,16 @@ func (s *state) buzz(r Ruleset, e event, m protocol.Buzz) ([]protocol.Effect, er
 	s.buzzes = append(s.buzzes, b)
 	if s.phase == protocol.PhaseReading {
 		s.phase = protocol.PhaseBuzzWindow
-		s.windowEnds = e.at.Add(r.BuzzWindow)
+		s.windowEnds = e.arrived.Add(e.window)
 	}
-	if r.BuzzWindow == 0 {
+	if r.MaxBuzzWindow == 0 {
 		return s.closeWindow(), nil
 	}
 	return nil, nil
 }
 
-// closeWindow gives the floor to the earliest pending buzz. Equal timestamps
-// go to whichever was processed first.
+// closeWindow gives the floor to the earliest judged press among pending
+// buzzes. Equal times go to whichever was processed first.
 func (s *state) closeWindow() []protocol.Effect {
 	win := -1
 	for i, b := range s.buzzes {
@@ -291,15 +298,28 @@ func (s *state) rule(r Ruleset, m protocol.Rule) ([]protocol.Effect, error) {
 	if m.BuzzID != b.id {
 		return nil, stale("buzz %s is not awaiting a ruling (%s is)", m.BuzzID, b.id)
 	}
+	// The moderator decides; timing only suggests. A close call has no
+	// default, so the ruling must say.
+	power, err := decide(m.Power, s.powerHint(r, *b), r.PowerPoints > 0 && m.Result == protocol.RulingCorrect, "power")
+	if err != nil {
+		return nil, err
+	}
+	neg, err := decide(m.Neg, s.interruptHint(r, *b), r.NegPoints != 0 && m.Result == protocol.RulingIncorrect, "neg")
+	if err != nil {
+		return nil, err
+	}
+	b.power = power
+	b.interrupt = neg || (m.Result != protocol.RulingIncorrect && s.interruptHint(r, *b) == protocol.HintYes)
+	b.ruled = true
 	switch m.Result {
 	case protocol.RulingCorrect:
 		b.status, b.points = protocol.BuzzStatusCorrect, r.TossupPoints
-		if b.power {
+		if power {
 			b.points = r.PowerPoints
 		}
 	case protocol.RulingIncorrect:
 		b.status = protocol.BuzzStatusIncorrect
-		if b.interrupt {
+		if neg {
 			b.points = r.NegPoints
 		}
 	case protocol.RulingNoPenalty:
@@ -362,4 +382,20 @@ func (s *state) ruleBonus(r Ruleset, m protocol.RuleBonus) ([]protocol.Effect, e
 	}
 	s.scores[to] += r.BonusPartPoints
 	return []protocol.Effect{protocol.ScoreChanged{TeamID: to, Delta: r.BonusPartPoints}}, nil
+}
+
+// decide resolves a power or neg decision: the moderator's override if given,
+// else the timing hint. relevant is false when the decision can't matter
+// (wrong ruling, or the rules award nothing for it).
+func decide(override *bool, h protocol.Hint, relevant bool, what string) (bool, error) {
+	switch {
+	case !relevant:
+		return false, nil
+	case override != nil:
+		return *override, nil
+	case h == protocol.HintClose:
+		return false, notAllowed("close call on %s: rule with %s set", what, what)
+	default:
+		return h == protocol.HintYes, nil
+	}
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kevinw93/QBuzzer/internal/clock"
+	"github.com/kevinw93/QBuzzer/internal/fair"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
@@ -19,7 +21,20 @@ type Game struct {
 	log    []event
 	s      state
 	nextID int
+
+	// Latest correction cap per player. Not logged: it only feeds the window
+	// length, which is logged on the buzz that opens the window.
+	clocks map[string]playerClock
 }
+
+type playerClock struct {
+	capMs float64
+	at    time.Time
+}
+
+// clockFreshness excludes players whose estimate has gone quiet (likely
+// disconnected) from sizing the window.
+const clockFreshness = 10 * time.Second
 
 var _ room.Game = (*Game)(nil)
 
@@ -28,7 +43,7 @@ func New(r Ruleset) *Game {
 	if err := r.Validate(); err != nil {
 		panic(fmt.Sprintf("game: %v", err))
 	}
-	return &Game{rules: r, s: newState()}
+	return &Game{rules: r, s: newState(), clocks: map[string]playerClock{}}
 }
 
 func (g *Game) View() protocol.GameView { return g.s.view(g.rules) }
@@ -50,8 +65,49 @@ func (g *Game) Handle(cmd room.Command) room.Result {
 		}
 		return g.result(true, effects, nil)
 	}
-	eff, err := g.record(event{at: cmd.ReceivedAt, player: cmd.PlayerID, msg: cmd.Msg})
+	e := event{at: cmd.ReceivedAt, player: cmd.PlayerID, msg: cmd.Msg}
+	switch m := cmd.Msg.(type) {
+	case protocol.Buzz:
+		p := g.judge(cmd, m.ClientTimeMs)
+		e.arrived, e.correction, e.clamped = cmd.ReceivedAt, p.CorrectionMs, p.Clamped
+		e.at = msBefore(cmd.ReceivedAt, p.CorrectionMs)
+		if g.s.phase == protocol.PhaseReading {
+			e.window = g.window(cmd.ReceivedAt)
+		}
+	case protocol.MarkPower:
+		e.at = msBefore(cmd.ReceivedAt, g.judge(cmd, m.ClientTimeMs).CorrectionMs)
+	case protocol.ReadingFinished:
+		e.at = msBefore(cmd.ReceivedAt, g.judge(cmd, m.ClientTimeMs).CorrectionMs)
+	}
+	eff, err := g.record(e)
 	return g.result(changed || err == nil, append(effects, eff...), err)
+}
+
+func (g *Game) PlayerClock(playerID string, est clock.Estimate, at time.Time) {
+	g.clocks[playerID] = playerClock{capMs: fair.Cap(est, durMs(g.rules.CorrectionMargin)), at: at}
+}
+
+func (g *Game) judge(cmd room.Command, clientMs float64) fair.Press {
+	return fair.PressTime(cmd.ServerMs, clientMs, cmd.Clock, cmd.ClockOK, durMs(g.rules.CorrectionMargin))
+}
+
+// window sizes the collection window opened at now: the largest correction
+// cap among players who could still buzz.
+func (g *Game) window(now time.Time) time.Duration {
+	var caps []float64
+	for _, p := range g.s.players {
+		if !g.s.eligible(g.rules, p) {
+			continue
+		}
+		if c, ok := g.clocks[p]; ok && now.Sub(c.at) <= clockFreshness {
+			caps = append(caps, c.capMs)
+		}
+	}
+	return time.Duration(fair.Window(caps, durMs(g.rules.MaxBuzzWindow)) * float64(time.Millisecond))
+}
+
+func msBefore(t time.Time, ms float64) time.Time {
+	return t.Add(-time.Duration(ms * float64(time.Millisecond)))
 }
 
 func (g *Game) Tick(now time.Time) room.Result {

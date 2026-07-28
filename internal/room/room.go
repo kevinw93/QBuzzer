@@ -28,6 +28,7 @@ type Incoming struct {
 	ReceivedAt time.Time
 	Clock      clock.Estimate // the connection's clock estimate when the message was read
 	ClockOK    bool           // false until the first ping exchange completes
+	ServerMs   float64        // ReceivedAt on the clock.Server scale
 }
 
 type (
@@ -42,6 +43,11 @@ type (
 	messageEvent struct {
 		c  *Client
 		in Incoming
+	}
+	clockEvent struct {
+		c   *Client
+		est clock.Estimate
+		at  time.Time
 	}
 )
 
@@ -132,6 +138,11 @@ func (r *Room) Deliver(c *Client, in Incoming) error {
 	return r.submit(messageEvent{c: c, in: in})
 }
 
+// UpdateClock reports c's latest clock estimate, taken at server time at.
+func (r *Room) UpdateClock(c *Client, est clock.Estimate, at time.Time) {
+	_ = r.submit(clockEvent{c: c, est: est, at: at})
+}
+
 func (r *Room) submit(ev any) error {
 	select {
 	case r.inbox <- ev:
@@ -194,6 +205,10 @@ func (r *Room) handle(ev any) {
 	case messageEvent:
 		if s, ok := r.byClient[ev.c]; ok {
 			r.handleMessage(s, ev.in)
+		}
+	case clockEvent:
+		if s, ok := r.byClient[ev.c]; ok && s.role == protocol.RolePlayer {
+			r.game.PlayerClock(s.id, ev.est, ev.at)
 		}
 	default:
 		panic(fmt.Sprintf("room: unknown event %T", ev))
@@ -313,7 +328,7 @@ func (r *Room) handleMessage(s *seat, in Incoming) {
 
 func (r *Room) toGame(s *seat, in Incoming) {
 	res := r.game.Handle(Command{
-		PlayerID: s.id, Role: s.role, Msg: in.Msg, ReceivedAt: in.ReceivedAt, Clock: in.Clock, ClockOK: in.ClockOK,
+		PlayerID: s.id, Role: s.role, Msg: in.Msg, ReceivedAt: in.ReceivedAt, Clock: in.Clock, ClockOK: in.ClockOK, ServerMs: in.ServerMs,
 	})
 	r.applyGame(s, in.Seq, res)
 }

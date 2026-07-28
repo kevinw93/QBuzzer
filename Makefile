@@ -1,7 +1,7 @@
 NPM ?= npm
 BIN := bin/qbuzzer
 
-.PHONY: dev gen check-gen test lint build run clean
+.PHONY: dev gen check-gen test lint build run clean fairness
 
 web/node_modules: web/package.json web/package-lock.json
 	cd web && $(NPM) ci
@@ -37,6 +37,10 @@ build: web/node_modules
 
 run: build
 	./$(BIN)
+
+# Regenerates the measured fairness numbers in docs/fairness.md.
+fairness:
+	go run ./cmd/fairsim -games 4000 > docs/fairness.md
 
 clean:
 	rm -rf bin web/dist/assets web/dist/*.html web/dist/*.svg
