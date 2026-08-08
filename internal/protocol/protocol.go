@@ -24,21 +24,19 @@ type MsgType string
 
 const (
 	// Client -> server.
-	MsgJoin            MsgType = "join"
-	MsgSetName         MsgType = "set_name"
-	MsgBuzz            MsgType = "buzz"
-	MsgPong            MsgType = "pong"
-	MsgStartTossup     MsgType = "start_tossup"
-	MsgMarkPower       MsgType = "mark_power"
-	MsgReadingFinished MsgType = "reading_finished"
-	MsgRule            MsgType = "rule"
-	MsgUndo            MsgType = "undo"
-	MsgNext            MsgType = "next"
-	MsgProtest         MsgType = "protest"
-	MsgRuleBonus       MsgType = "rule_bonus"
-	MsgCreateTeam      MsgType = "create_team"
-	MsgAssignTeam      MsgType = "assign_team"
-	MsgChooseTeam      MsgType = "choose_team"
+	MsgJoin        MsgType = "join"
+	MsgSetName     MsgType = "set_name"
+	MsgBuzz        MsgType = "buzz"
+	MsgPong        MsgType = "pong"
+	MsgStartTossup MsgType = "start_tossup"
+	MsgRule        MsgType = "rule"
+	MsgUndo        MsgType = "undo"
+	MsgNext        MsgType = "next"
+	MsgProtest     MsgType = "protest"
+	MsgRuleBonus   MsgType = "rule_bonus"
+	MsgCreateTeam  MsgType = "create_team"
+	MsgAssignTeam  MsgType = "assign_team"
+	MsgChooseTeam  MsgType = "choose_team"
 
 	// Server -> client.
 	MsgWelcome      MsgType = "welcome"
@@ -104,38 +102,27 @@ type StartTossup struct {
 	TossupID string `json:"tossupId"`
 }
 
-// MarkPower and ReadingFinished carry the moderator's clock so they are
-// judged on the same timeline as buzzes.
-type MarkPower struct {
-	TossupID     string  `json:"tossupId"`
-	ClientTimeMs float64 `json:"clientTimeMs,omitempty"`
-}
-
-type ReadingFinished struct {
-	TossupID     string  `json:"tossupId"`
-	ClientTimeMs float64 `json:"clientTimeMs,omitempty"`
-}
-
 type Next struct {
 	TossupID string `json:"tossupId"`
 }
 
+// Ruling is the moderator's verdict on a buzz. The moderator decides powers
+// and negs; QBuzzer can't know which word a player heard.
 type Ruling string
 
 const (
-	RulingCorrect   Ruling = "correct"
-	RulingIncorrect Ruling = "incorrect"  // neg if the buzz interrupted, else zero
-	RulingNoPenalty Ruling = "no_penalty" // incorrect, never negged
+	RulingPower     Ruling = "power"      // correct, before the power mark
+	RulingCorrect   Ruling = "correct"    // correct, no power
+	RulingNeg       Ruling = "neg"        // incorrect interrupt
+	RulingNoPenalty Ruling = "no_penalty" // incorrect, no penalty (e.g. after the question ended)
 )
 
-// Rule is rejected unless BuzzID is the buzz awaiting a ruling. Power (for a
-// correct answer) and Neg (for an incorrect one) override the timing hint,
-// and are required when the hint is close.
+// Rule is rejected unless BuzzID is the buzz awaiting a ruling, and if Result
+// awards points the ruleset doesn't have (a power without powers, a neg
+// without negs).
 type Rule struct {
 	BuzzID string `json:"buzzId"`
 	Result Ruling `json:"result"`
-	Power  *bool  `json:"power,omitempty"`
-	Neg    *bool  `json:"neg,omitempty"`
 }
 
 // Undo is rejected unless ActionID is the most recent undoable action.
@@ -290,40 +277,23 @@ const (
 	BuzzStatusLost      BuzzStatus = "lost"    // another buzz in the window was earlier
 	BuzzStatusAwaiting  BuzzStatus = "awaiting"
 	BuzzStatusCorrect   BuzzStatus = "correct"
-	BuzzStatusIncorrect BuzzStatus = "incorrect"
+	BuzzStatusIncorrect BuzzStatus = "incorrect" // ruled a neg
 	BuzzStatusNoPenalty BuzzStatus = "no_penalty"
-)
-
-// Hint is the timing evidence for a power or an interrupt. Close means the
-// press came within the possible audio delay after the moderator's mark, so
-// only the moderator can judge it.
-type Hint string
-
-const (
-	HintYes   Hint = "yes"
-	HintNo    Hint = "no"
-	HintClose Hint = "close"
 )
 
 // BuzzView is one buzz on the current tossup. OffsetMs is when it was judged
 // pressed, in milliseconds after the tossup started; CorrectionMs is how much
-// earlier than its arrival that is. Gaps are press minus mark, absent until
-// the mark exists.
+// earlier than its arrival that is.
 type BuzzView struct {
-	ID             string     `json:"id"`
-	PlayerID       string     `json:"playerId"`
-	TeamID         string     `json:"teamId"`
-	OffsetMs       float64    `json:"offsetMs"`
-	CorrectionMs   float64    `json:"correctionMs"`
-	Clamped        bool       `json:"clamped"` // the client's timestamp was implausible
-	Status         BuzzStatus `json:"status"`
-	PowerHint      Hint       `json:"powerHint,omitempty"` // empty when the rules have no powers
-	PowerGapMs     *float64   `json:"powerGapMs,omitempty"`
-	InterruptHint  Hint       `json:"interruptHint"`
-	InterruptGapMs *float64   `json:"interruptGapMs,omitempty"`
-	Power          bool       `json:"power"`     // as ruled; the hint until then
-	Interrupt      bool       `json:"interrupt"` // as ruled; the hint until then
-	Points         int        `json:"points"`
+	ID           string     `json:"id"`
+	PlayerID     string     `json:"playerId"`
+	TeamID       string     `json:"teamId"`
+	OffsetMs     float64    `json:"offsetMs"`
+	CorrectionMs float64    `json:"correctionMs"`
+	Clamped      bool       `json:"clamped"` // the client's timestamp was implausible
+	Status       BuzzStatus `json:"status"`
+	Power        bool       `json:"power"` // ruled a power
+	Points       int        `json:"points"`
 }
 
 // TeamView is a team and its score. In individual play every player is a
@@ -355,16 +325,14 @@ type ProtestView struct {
 
 // GameView is the game portion of RoomState.
 type GameView struct {
-	Phase           Phase         `json:"phase"`
-	TossupID        string        `json:"tossupId"`
-	TossupNumber    int           `json:"tossupNumber"`
-	PowerMarked     bool          `json:"powerMarked"`
-	ReadingFinished bool          `json:"readingFinished"`
-	Buzzes          []BuzzView    `json:"buzzes"`    // current tossup, earliest first
-	LockedOut       []string      `json:"lockedOut"` // team IDs, or player IDs under player lockout
-	Bonus           *BonusView    `json:"bonus,omitempty"`
-	Teams           []TeamView    `json:"teams"`
-	Protests        []ProtestView `json:"protests"`
-	LastActionID    string        `json:"lastActionId,omitempty"` // target for Undo
-	Individual      bool          `json:"individual"`
+	Phase        Phase         `json:"phase"`
+	TossupID     string        `json:"tossupId"`
+	TossupNumber int           `json:"tossupNumber"`
+	Buzzes       []BuzzView    `json:"buzzes"`    // current tossup, earliest first
+	LockedOut    []string      `json:"lockedOut"` // team IDs, or player IDs under player lockout
+	Bonus        *BonusView    `json:"bonus,omitempty"`
+	Teams        []TeamView    `json:"teams"`
+	Protests     []ProtestView `json:"protests"`
+	LastActionID string        `json:"lastActionId,omitempty"` // target for Undo
+	Individual   bool          `json:"individual"`
 }

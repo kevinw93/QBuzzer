@@ -26,9 +26,8 @@ type event struct {
 
 // Internal events, logged when they change state so replay is deterministic.
 type (
-	playerJoined  struct{}
-	windowClosed  struct{}
-	tossupExpired struct{}
+	playerJoined struct{}
+	windowClosed struct{}
 )
 
 // roster events are never reverted by undo: players, teams, and protests are
@@ -43,7 +42,7 @@ func roster(msg any) bool {
 
 func undoable(msg any) bool {
 	switch msg.(type) {
-	case protocol.StartTossup, protocol.MarkPower, protocol.ReadingFinished,
+	case protocol.StartTossup,
 		protocol.Rule, protocol.RuleBonus, protocol.Next:
 		return true
 	}
@@ -126,36 +125,6 @@ func apply(r Ruleset, s *state, e event, replaying bool) ([]protocol.Effect, err
 
 	case windowClosed:
 		return s.closeWindow(), nil
-
-	case protocol.MarkPower:
-		if err := s.requirePhase(protocol.PhaseReading); err != nil {
-			return nil, err
-		}
-		if err := s.requireTossup(m.TossupID); err != nil {
-			return nil, err
-		}
-		if r.PowerPoints == 0 || !s.powerAt.IsZero() {
-			return nil, notAllowed("power mark not available")
-		}
-		s.powerAt = e.at
-		return nil, nil
-
-	case protocol.ReadingFinished:
-		if err := s.requirePhase(protocol.PhaseReading); err != nil {
-			return nil, err
-		}
-		if err := s.requireTossup(m.TossupID); err != nil {
-			return nil, err
-		}
-		if !s.finishedAt.IsZero() {
-			return nil, notAllowed("reading already finished")
-		}
-		s.finishedAt = e.at
-		return nil, nil
-
-	case tossupExpired:
-		s.phase = protocol.PhaseTossupDead
-		return nil, nil
 
 	case protocol.Rule:
 		return s.rule(r, m)
@@ -242,8 +211,6 @@ func (s *state) buzz(r Ruleset, e event, m protocol.Buzz) ([]protocol.Effect, er
 	}
 	s.nextBuzz++
 	b.id = "b" + strconv.Itoa(s.nextBuzz)
-	b.power = r.PowerPoints > 0 && (s.powerAt.IsZero() || e.at.Before(s.powerAt))
-	b.interrupt = s.finishedAt.IsZero() || e.at.Before(s.finishedAt)
 	s.buzzes = append(s.buzzes, b)
 	if s.phase == protocol.PhaseReading {
 		s.phase = protocol.PhaseBuzzWindow
@@ -298,30 +265,19 @@ func (s *state) rule(r Ruleset, m protocol.Rule) ([]protocol.Effect, error) {
 	if m.BuzzID != b.id {
 		return nil, stale("buzz %s is not awaiting a ruling (%s is)", m.BuzzID, b.id)
 	}
-	// The moderator decides; timing only suggests. A close call has no
-	// default, so the ruling must say.
-	power, err := decide(m.Power, s.powerHint(r, *b), r.PowerPoints > 0 && m.Result == protocol.RulingCorrect, "power")
-	if err != nil {
-		return nil, err
-	}
-	neg, err := decide(m.Neg, s.interruptHint(r, *b), r.NegPoints != 0 && m.Result == protocol.RulingIncorrect, "neg")
-	if err != nil {
-		return nil, err
-	}
-	b.power = power
-	b.interrupt = neg || (m.Result != protocol.RulingIncorrect && s.interruptHint(r, *b) == protocol.HintYes)
-	b.ruled = true
 	switch m.Result {
+	case protocol.RulingPower:
+		if r.PowerPoints == 0 {
+			return nil, notAllowed("these rules have no powers")
+		}
+		b.status, b.power, b.points = protocol.BuzzStatusCorrect, true, r.PowerPoints
 	case protocol.RulingCorrect:
 		b.status, b.points = protocol.BuzzStatusCorrect, r.TossupPoints
-		if power {
-			b.points = r.PowerPoints
+	case protocol.RulingNeg:
+		if r.NegPoints == 0 {
+			return nil, notAllowed("these rules have no negs")
 		}
-	case protocol.RulingIncorrect:
-		b.status = protocol.BuzzStatusIncorrect
-		if neg {
-			b.points = r.NegPoints
-		}
+		b.status, b.points = protocol.BuzzStatusIncorrect, r.NegPoints
 	case protocol.RulingNoPenalty:
 		b.status = protocol.BuzzStatusNoPenalty
 	}
@@ -331,7 +287,7 @@ func (s *state) rule(r Ruleset, m protocol.Rule) ([]protocol.Effect, error) {
 		effects = append(effects, protocol.ScoreChanged{TeamID: b.team, Delta: b.points})
 	}
 
-	if m.Result == protocol.RulingCorrect {
+	if b.status == protocol.BuzzStatusCorrect {
 		if r.BonusParts == 0 {
 			s.endTossup()
 		} else {
@@ -382,20 +338,4 @@ func (s *state) ruleBonus(r Ruleset, m protocol.RuleBonus) ([]protocol.Effect, e
 	}
 	s.scores[to] += r.BonusPartPoints
 	return []protocol.Effect{protocol.ScoreChanged{TeamID: to, Delta: r.BonusPartPoints}}, nil
-}
-
-// decide resolves a power or neg decision: the moderator's override if given,
-// else the timing hint. relevant is false when the decision can't matter
-// (wrong ruling, or the rules award nothing for it).
-func decide(override *bool, h protocol.Hint, relevant bool, what string) (bool, error) {
-	switch {
-	case !relevant:
-		return false, nil
-	case override != nil:
-		return *override, nil
-	case h == protocol.HintClose:
-		return false, notAllowed("close call on %s: rule with %s set", what, what)
-	default:
-		return h == protocol.HintYes, nil
-	}
 }

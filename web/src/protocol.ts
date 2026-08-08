@@ -34,8 +34,6 @@ export const MsgSetName: MsgType = "set_name";
 export const MsgBuzz: MsgType = "buzz";
 export const MsgPong: MsgType = "pong";
 export const MsgStartTossup: MsgType = "start_tossup";
-export const MsgMarkPower: MsgType = "mark_power";
-export const MsgReadingFinished: MsgType = "reading_finished";
 export const MsgRule: MsgType = "rule";
 export const MsgUndo: MsgType = "undo";
 export const MsgNext: MsgType = "next";
@@ -103,35 +101,26 @@ export interface Pong {
 export interface StartTossup {
   tossupId: string;
 }
-/**
- * MarkPower and ReadingFinished carry the moderator's clock so they are
- * judged on the same timeline as buzzes.
- */
-export interface MarkPower {
-  tossupId: string;
-  clientTimeMs?: number /* float64 */;
-}
-export interface ReadingFinished {
-  tossupId: string;
-  clientTimeMs?: number /* float64 */;
-}
 export interface Next {
   tossupId: string;
 }
-export const RulingCorrect = "correct";
-export const RulingIncorrect = "incorrect"; // neg if the buzz interrupted, else zero
-export const RulingNoPenalty = "no_penalty"; // incorrect, never negged
-export type Ruling = typeof RulingCorrect | typeof RulingIncorrect | typeof RulingNoPenalty;
 /**
- * Rule is rejected unless BuzzID is the buzz awaiting a ruling. Power (for a
- * correct answer) and Neg (for an incorrect one) override the timing hint,
- * and are required when the hint is close.
+ * Ruling is the moderator's verdict on a buzz. The moderator decides powers
+ * and negs; QBuzzer can't know which word a player heard.
+ */
+export const RulingPower = "power"; // correct, before the power mark
+export const RulingCorrect = "correct"; // correct, no power
+export const RulingNeg = "neg"; // incorrect interrupt
+export const RulingNoPenalty = "no_penalty"; // incorrect, no penalty (e.g. after the question ended)
+export type Ruling = typeof RulingPower | typeof RulingCorrect | typeof RulingNeg | typeof RulingNoPenalty;
+/**
+ * Rule is rejected unless BuzzID is the buzz awaiting a ruling, and if Result
+ * awards points the ruleset doesn't have (a power without powers, a neg
+ * without negs).
  */
 export interface Rule {
   buzzId: string;
   result: Ruling;
-  power?: boolean;
-  neg?: boolean;
 }
 /**
  * Undo is rejected unless ActionID is the most recent undoable action.
@@ -270,23 +259,13 @@ export const BuzzStatusPending = "pending"; // inside the collection window
 export const BuzzStatusLost = "lost"; // another buzz in the window was earlier
 export const BuzzStatusAwaiting = "awaiting";
 export const BuzzStatusCorrect = "correct";
-export const BuzzStatusIncorrect = "incorrect";
+export const BuzzStatusIncorrect = "incorrect"; // ruled a neg
 export const BuzzStatusNoPenalty = "no_penalty";
 export type BuzzStatus = typeof BuzzStatusPending | typeof BuzzStatusLost | typeof BuzzStatusAwaiting | typeof BuzzStatusCorrect | typeof BuzzStatusIncorrect | typeof BuzzStatusNoPenalty;
 /**
- * Hint is the timing evidence for a power or an interrupt. Close means the
- * press came within the possible audio delay after the moderator's mark, so
- * only the moderator can judge it.
- */
-export const HintYes = "yes";
-export const HintNo = "no";
-export const HintClose = "close";
-export type Hint = typeof HintYes | typeof HintNo | typeof HintClose;
-/**
  * BuzzView is one buzz on the current tossup. OffsetMs is when it was judged
  * pressed, in milliseconds after the tossup started; CorrectionMs is how much
- * earlier than its arrival that is. Gaps are press minus mark, absent until
- * the mark exists.
+ * earlier than its arrival that is.
  */
 export interface BuzzView {
   id: string;
@@ -296,12 +275,7 @@ export interface BuzzView {
   correctionMs: number /* float64 */;
   clamped: boolean; // the client's timestamp was implausible
   status: BuzzStatus;
-  powerHint?: Hint; // empty when the rules have no powers
-  powerGapMs?: number /* float64 */;
-  interruptHint: Hint;
-  interruptGapMs?: number /* float64 */;
-  power: boolean; // as ruled; the hint until then
-  interrupt: boolean; // as ruled; the hint until then
+  power: boolean; // ruled a power
   points: number /* int */;
 }
 /**
@@ -336,8 +310,6 @@ export interface GameView {
   phase: Phase;
   tossupId: string;
   tossupNumber: number /* int */;
-  powerMarked: boolean;
-  readingFinished: boolean;
   buzzes: BuzzView[]; // current tossup, earliest first
   lockedOut: string[]; // team IDs, or player IDs under player lockout
   bonus?: BonusView;

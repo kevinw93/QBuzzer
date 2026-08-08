@@ -22,12 +22,6 @@ func (h *harness) timed(from string, arrival, pressedBefore time.Duration, msg a
 	case protocol.Buzz:
 		m.ClientTimeMs = clientMs
 		msg = m
-	case protocol.MarkPower:
-		m.ClientTimeMs = clientMs
-		msg = m
-	case protocol.ReadingFinished:
-		m.ClientTimeMs = clientMs
-		msg = m
 	}
 	role := protocol.RolePlayer
 	if from == "mod" {
@@ -117,8 +111,8 @@ func TestWindowCoversLargestEligibleCap(t *testing.T) {
 		setClocks(h, map[string]float64{"p1": 200, "p2": 200, "p3": 30}, 0)
 		h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
 		h.ok("p1", ms(1000), protocol.Buzz{TossupID: "t1"})
-		h.tick(ms(1000) + Standard().MaxBuzzWindow + tickGrace)                                          // p1 and p2 caps exceed the ceiling
-		h.ok("mod", ms(1500), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect}) // T1 locked
+		h.tick(ms(1000) + Standard().MaxBuzzWindow + tickGrace)                                    // p1 and p2 caps exceed the ceiling
+		h.ok("mod", ms(1500), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg}) // T1 locked
 		if got := wake(h.ok("p3", ms(2000), protocol.Buzz{TossupID: "t1"}), ms(2000)); got != ms(40) {
 			t.Errorf("window = %v, want only p3's 30 + 10 ms", got)
 		}
@@ -142,43 +136,22 @@ func TestWindowCoversLargestEligibleCap(t *testing.T) {
 	})
 }
 
-func TestModeratorMarksAreClockCorrected(t *testing.T) {
-	h := teams(t, Standard())
-	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
-	h.timed("mod", ms(1000), ms(60), protocol.MarkPower{TossupID: "t1"}) // marked at 940
-	h.timed("p1", ms(1000), ms(50), protocol.Buzz{TossupID: "t1"})       // pressed at 950
-	b := buzzOf(h.view(), "p1")
-	if b.PowerGapMs == nil || *b.PowerGapMs != 10 || b.PowerHint != protocol.HintClose {
-		t.Errorf("buzz = %+v, want a 10 ms close call", b)
-	}
-}
-
-func TestHintsAndOverrides(t *testing.T) {
-	yes, no := true, false
+func TestRulings(t *testing.T) {
 	tests := []struct {
 		name       string
 		rules      func() Ruleset
-		mark       time.Duration // power mark arrival; 0 = never marked
-		finish     time.Duration // reading_finished arrival; 0 = never
 		result     protocol.Ruling
-		power, neg *bool
 		wantReject bool
 		wantPoints int
+		wantPhase  protocol.Phase
 	}{
-		{"unmarked power is a power", Standard, 0, 0, protocol.RulingCorrect, nil, nil, false, 15},
-		{"well before the mark", Standard, ms(1500), 0, protocol.RulingCorrect, nil, nil, false, 15},
-		{"well after the mark", Standard, ms(500), 0, protocol.RulingCorrect, nil, nil, false, 10},
-		{"close call needs a decision", Standard, ms(900), 0, protocol.RulingCorrect, nil, nil, true, 0},
-		{"close call ruled power", Standard, ms(900), 0, protocol.RulingCorrect, &yes, nil, false, 15},
-		{"close call ruled not power", Standard, ms(900), 0, protocol.RulingCorrect, &no, nil, false, 10},
-		{"override beats a clear hint", Standard, ms(500), 0, protocol.RulingCorrect, &yes, nil, false, 15},
-		{"no powers: no decision needed", NoPowers, ms(900), 0, protocol.RulingCorrect, nil, nil, false, 10},
-		{"interrupt negs", Standard, 0, 0, protocol.RulingIncorrect, nil, nil, false, -5},
-		{"close end of reading needs a decision", Standard, 0, ms(900), protocol.RulingIncorrect, nil, nil, true, 0},
-		{"close end ruled neg", Standard, 0, ms(900), protocol.RulingIncorrect, nil, &yes, false, -5},
-		{"close end ruled no neg", Standard, 0, ms(900), protocol.RulingIncorrect, nil, &no, false, 0},
-		{"no_penalty never needs a decision", Standard, 0, ms(900), protocol.RulingNoPenalty, nil, nil, false, 0},
-		{"practice has no negs to decide", Practice, 0, ms(900), protocol.RulingIncorrect, nil, nil, false, 0},
+		{"power", Standard, protocol.RulingPower, false, 15, protocol.PhaseBonus},
+		{"correct", Standard, protocol.RulingCorrect, false, 10, protocol.PhaseBonus},
+		{"neg", Standard, protocol.RulingNeg, false, -5, protocol.PhaseReading},
+		{"no penalty", Standard, protocol.RulingNoPenalty, false, 0, protocol.PhaseReading},
+		{"power without powers", NoPowers, protocol.RulingPower, true, 0, protocol.PhaseAwaitingRuling},
+		{"neg without negs", Practice, protocol.RulingNeg, true, 0, protocol.PhaseAwaitingRuling},
+		{"practice correct skips the bonus", Practice, protocol.RulingCorrect, false, 10, protocol.PhaseIdle},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,29 +162,29 @@ func TestHintsAndOverrides(t *testing.T) {
 				h = teams(t, tt.rules())
 			}
 			h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
-			// Buzz first, then marks stamped around it: marks may arrive
-			// after a buzz yet be judged earlier.
-			h.ok("p1", ms(1000), protocol.Buzz{TossupID: "t1"})
-			h.tick(ms(1000) + testWindow + tickGrace)
-			if tt.mark != 0 {
-				h.g.s.powerAt = t0.Add(tt.mark) // marks are only accepted while reading; set directly
-			}
-			if tt.finish != 0 {
-				h.g.s.finishedAt = t0.Add(tt.finish)
-			}
-			rule := protocol.Rule{BuzzID: h.awaitingBuzz(), Result: tt.result, Power: tt.power, Neg: tt.neg}
-			res := h.g.Handle(room.Command{PlayerID: "mod", Role: protocol.RoleModerator, Msg: rule, ReceivedAt: t0.Add(ms(2000))})
+			h.buzzAndLock("p1", ms(1000))
+			rule := protocol.Rule{BuzzID: h.awaitingBuzz(), Result: tt.result}
 			if tt.wantReject {
-				if res.Reject == nil || res.Reject.Code != protocol.ErrCodeNotAllowed {
-					t.Fatalf("got %+v, want a close-call rejection", res.Reject)
-				}
+				h.reject(protocol.ErrCodeNotAllowed, "mod", ms(2000), rule)
+				h.phase(tt.wantPhase)
 				return
 			}
-			if res.Reject != nil {
-				t.Fatalf("rejected: %+v", res.Reject)
+			res := h.ok("mod", ms(2000), rule)
+			h.phase(tt.wantPhase)
+			var ruled protocol.Ruled
+			for _, e := range res.Effects {
+				if r, ok := e.(protocol.Ruled); ok {
+					ruled = r
+				}
 			}
-			if b := buzzOf(h.view(), "p1"); b.Points != tt.wantPoints {
-				t.Errorf("points = %d, want %d (buzz %+v)", b.Points, tt.wantPoints, b)
+			if ruled.Points != tt.wantPoints || ruled.Result != tt.result || ruled.PlayerID != "p1" {
+				t.Errorf("ruled effect = %+v, want %d points", ruled, tt.wantPoints)
+			}
+			if tt.wantPhase == protocol.PhaseIdle {
+				return // the tossup ended; its buzzes are cleared
+			}
+			if b := buzzOf(h.view(), "p1"); b.Points != tt.wantPoints || b.Power != (tt.result == protocol.RulingPower) {
+				t.Errorf("buzz = %+v", b)
 			}
 		})
 	}

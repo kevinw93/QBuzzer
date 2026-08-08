@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kevinw93/QBuzzer/internal/fair"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 )
 
@@ -17,8 +16,7 @@ type buzz struct {
 	correction       float64 // ms
 	clamped          bool
 	status           protocol.BuzzStatus
-	ruled            bool
-	power, interrupt bool // decided at ruling
+	power            bool // ruled a power
 	points           int
 }
 
@@ -37,8 +35,6 @@ type state struct {
 	phase      protocol.Phase
 	tossupNum  int // the current tossup, or the next to start when idle
 	startedAt  time.Time
-	powerAt    time.Time // zero until marked
-	finishedAt time.Time // zero until reading finished
 	windowEnds time.Time
 	buzzes     []buzz
 	locked     map[string]bool // lockout keys: team IDs, or player IDs under LockoutPlayer
@@ -146,7 +142,7 @@ func (s *state) awaiting() *buzz {
 func (s *state) endTossup() {
 	s.phase = protocol.PhaseIdle
 	s.tossupNum++
-	s.startedAt, s.powerAt, s.finishedAt, s.windowEnds = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	s.startedAt, s.windowEnds = time.Time{}, time.Time{}
 	s.buzzes = nil
 	s.locked = map[string]bool{}
 	s.bonus = nil
@@ -154,16 +150,14 @@ func (s *state) endTossup() {
 
 func (s *state) view(r Ruleset) protocol.GameView {
 	v := protocol.GameView{
-		Phase:           s.phase,
-		TossupID:        s.tossupID(),
-		TossupNumber:    s.tossupNum,
-		PowerMarked:     !s.powerAt.IsZero(),
-		ReadingFinished: !s.finishedAt.IsZero(),
-		Buzzes:          make([]protocol.BuzzView, 0, len(s.buzzes)),
-		LockedOut:       slices.Sorted(maps.Keys(s.locked)),
-		Teams:           []protocol.TeamView{},
-		Protests:        slices.Clone(s.protests),
-		Individual:      r.Individual,
+		Phase:        s.phase,
+		TossupID:     s.tossupID(),
+		TossupNumber: s.tossupNum,
+		Buzzes:       make([]protocol.BuzzView, 0, len(s.buzzes)),
+		LockedOut:    slices.Sorted(maps.Keys(s.locked)),
+		Teams:        []protocol.TeamView{},
+		Protests:     slices.Clone(s.protests),
+		Individual:   r.Individual,
 	}
 	if v.LockedOut == nil {
 		v.LockedOut = []string{}
@@ -172,24 +166,11 @@ func (s *state) view(r Ruleset) protocol.GameView {
 		v.Protests = []protocol.ProtestView{}
 	}
 	for _, b := range s.buzzes {
-		bv := protocol.BuzzView{
+		v.Buzzes = append(v.Buzzes, protocol.BuzzView{
 			ID: b.id, PlayerID: b.player, TeamID: b.team,
 			OffsetMs: msBetween(s.startedAt, b.at), CorrectionMs: b.correction, Clamped: b.clamped,
-			Status: b.status, PowerHint: s.powerHint(r, b), InterruptHint: s.interruptHint(r, b),
-			Power: b.power, Interrupt: b.interrupt, Points: b.points,
-		}
-		if !b.ruled {
-			bv.Power, bv.Interrupt = bv.PowerHint == protocol.HintYes, bv.InterruptHint == protocol.HintYes
-		}
-		if !s.powerAt.IsZero() {
-			gap := msBetween(s.powerAt, b.at)
-			bv.PowerGapMs = &gap
-		}
-		if !s.finishedAt.IsZero() {
-			gap := msBetween(s.finishedAt, b.at)
-			bv.InterruptGapMs = &gap
-		}
-		v.Buzzes = append(v.Buzzes, bv)
+			Status: b.status, Power: b.power, Points: b.points,
+		})
 	}
 	if s.bonus != nil {
 		v.Bonus = &protocol.BonusView{ID: s.bonus.id, TeamID: s.bonus.team, Parts: slices.Clone(s.bonus.parts)}
@@ -218,25 +199,5 @@ func (s *state) view(r Ruleset) protocol.GameView {
 func actionID(eventID int) string { return "a" + strconv.Itoa(eventID) }
 
 func msBetween(from, to time.Time) float64 { return float64(to.Sub(from).Microseconds()) / 1000 }
-
-// powerHint is empty when the rules have no powers. An unmarked power means
-// reading hasn't reached it, so every buzz so far is a power.
-func (s *state) powerHint(r Ruleset, b buzz) protocol.Hint {
-	if r.PowerPoints == 0 {
-		return ""
-	}
-	return markHint(r, b, s.powerAt)
-}
-
-func (s *state) interruptHint(r Ruleset, b buzz) protocol.Hint {
-	return markHint(r, b, s.finishedAt)
-}
-
-func markHint(r Ruleset, b buzz, mark time.Time) protocol.Hint {
-	if mark.IsZero() {
-		return protocol.HintYes
-	}
-	return fair.Classify(msBetween(mark, b.at), 0, durMs(r.AudioDelayMax))
-}
 
 func durMs(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

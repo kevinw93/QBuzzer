@@ -174,9 +174,9 @@ func reach(t *testing.T, phase protocol.Phase) *harness {
 		h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingCorrect})
 	case protocol.PhaseTossupDead:
 		h.buzzAndLock("p1", ms(1000))
-		h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+		h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 		h.buzzAndLock("p3", ms(3000))
-		h.ok("mod", ms(4000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+		h.ok("mod", ms(4000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 	}
 	h.phase(phase)
 	return h
@@ -196,8 +196,6 @@ func TestTransitionMatrix(t *testing.T) {
 	}{
 		{"start_tossup", func(h *harness) (string, any) { return "mod", protocol.StartTossup{TossupID: h.tossup()} }},
 		{"buzz", func(h *harness) (string, any) { return "p3", protocol.Buzz{TossupID: h.tossup()} }},
-		{"mark_power", func(h *harness) (string, any) { return "mod", protocol.MarkPower{TossupID: h.tossup()} }},
-		{"reading_finished", func(h *harness) (string, any) { return "mod", protocol.ReadingFinished{TossupID: h.tossup()} }},
 		{"rule", func(h *harness) (string, any) {
 			return "mod", protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingCorrect}
 		}},
@@ -216,10 +214,8 @@ func TestTransitionMatrix(t *testing.T) {
 			"create_team":  protocol.PhaseIdle,
 		},
 		protocol.PhaseReading: {
-			"buzz":             protocol.PhaseBuzzWindow,
-			"mark_power":       protocol.PhaseReading,
-			"reading_finished": protocol.PhaseReading,
-			"next":             protocol.PhaseIdle,
+			"buzz": protocol.PhaseBuzzWindow,
+			"next": protocol.PhaseIdle,
 		},
 		protocol.PhaseBuzzWindow: {
 			"buzz": protocol.PhaseBuzzWindow,
@@ -262,7 +258,6 @@ func TestStaleIDsAreRejected(t *testing.T) {
 	}{
 		{protocol.PhaseIdle, protocol.StartTossup{TossupID: "t2"}},
 		{protocol.PhaseReading, protocol.Buzz{TossupID: "t0"}},
-		{protocol.PhaseReading, protocol.MarkPower{TossupID: "t9"}},
 		{protocol.PhaseReading, protocol.Next{TossupID: "t2"}},
 		{protocol.PhaseAwaitingRuling, protocol.Rule{BuzzID: "b9", Result: protocol.RulingCorrect}},
 		{protocol.PhaseBonus, protocol.RuleBonus{BonusID: "B9", Part: 0, Correct: true}},
@@ -276,70 +271,11 @@ func TestStaleIDsAreRejected(t *testing.T) {
 	}
 }
 
-func TestScoring(t *testing.T) {
-	tests := []struct {
-		name       string
-		rules      func() Ruleset
-		markPower  bool
-		finish     bool
-		result     protocol.Ruling
-		wantPoints int
-		wantPhase  protocol.Phase
-	}{
-		{"power", Standard, false, false, protocol.RulingCorrect, 15, protocol.PhaseBonus},
-		{"after power mark", Standard, true, false, protocol.RulingCorrect, 10, protocol.PhaseBonus},
-		{"no powers", NoPowers, false, false, protocol.RulingCorrect, 10, protocol.PhaseBonus},
-		{"neg on interrupt", Standard, false, false, protocol.RulingIncorrect, -5, protocol.PhaseReading},
-		{"no neg well after reading finished", Standard, true, true, protocol.RulingIncorrect, 0, protocol.PhaseReading},
-		{"no_penalty interrupt", Standard, false, false, protocol.RulingNoPenalty, 0, protocol.PhaseReading},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := teams(t, tt.rules())
-			h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
-			if tt.markPower {
-				h.ok("mod", ms(500), protocol.MarkPower{TossupID: "t1"})
-			}
-			if tt.finish {
-				h.ok("mod", ms(500), protocol.ReadingFinished{TossupID: "t1"})
-			}
-			h.buzzAndLock("p1", ms(1000))
-			res := h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: tt.result})
-			h.wantScores(fmt.Sprintf("T1=%d T2=0", tt.wantPoints))
-			h.phase(tt.wantPhase)
-
-			var ruled *protocol.Ruled
-			for _, e := range res.Effects {
-				if r, ok := e.(protocol.Ruled); ok {
-					ruled = &r
-				}
-			}
-			if ruled == nil || ruled.Points != tt.wantPoints || ruled.PlayerID != "p1" {
-				t.Errorf("effects = %+v", res.Effects)
-			}
-		})
-	}
-}
-
-// Power and interrupt are decided by buzz timestamp, not processing order: a
-// buzz stamped before the mark is a power even if the mark was processed first.
-func TestPowerUsesTimestampsNotProcessingOrder(t *testing.T) {
-	h := teams(t, Standard())
-	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
-	h.ok("mod", ms(1000), protocol.MarkPower{TossupID: "t1"})
-	h.ok("mod", ms(1001), protocol.ReadingFinished{TossupID: "t1"})
-	h.ok("p1", ms(999), protocol.Buzz{TossupID: "t1"}) // stamped earlier, processed later
-	b := h.view().Buzzes[0]
-	if !b.Power || !b.Interrupt {
-		t.Errorf("buzz = %+v, want power and interrupt", b)
-	}
-}
-
 func TestLockoutAndDeadTossup(t *testing.T) {
 	h := teams(t, Standard())
 	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
 	h.buzzAndLock("p1", ms(1000))
-	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 	h.phase(protocol.PhaseReading)
 
 	h.reject(protocol.ErrCodeNotAllowed, "p1", ms(2100), protocol.Buzz{TossupID: "t1"})
@@ -348,7 +284,7 @@ func TestLockoutAndDeadTossup(t *testing.T) {
 		t.Errorf("locked out = %v", got)
 	}
 	h.buzzAndLock("p3", ms(3000))
-	h.ok("mod", ms(4000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+	h.ok("mod", ms(4000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 	h.phase(protocol.PhaseTossupDead)
 	h.wantScores("T1=-5 T2=-5")
 
@@ -365,7 +301,7 @@ func TestPlayerLockoutLetsTeammatesBuzz(t *testing.T) {
 	h := teams(t, r)
 	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
 	h.buzzAndLock("p1", ms(1000))
-	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 	h.reject(protocol.ErrCodeNotAllowed, "p1", ms(2100), protocol.Buzz{TossupID: "t1"})
 	h.buzzAndLock("p2", ms(3000))
 }
@@ -430,7 +366,7 @@ func TestNearSimultaneousBuzzes(t *testing.T) {
 		h.ok("p1", ms(1000), protocol.Buzz{TossupID: "t1"})
 		h.ok("p3", ms(1020), protocol.Buzz{TossupID: "t1"})
 		h.tick(ms(1200))
-		h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+		h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 		h.phase(protocol.PhaseReading) // p3's lost buzz does not take the floor
 		h.buzzAndLock("p3", ms(3000))
 	})
@@ -453,11 +389,9 @@ func TestNearSimultaneousBuzzes(t *testing.T) {
 }
 
 func TestWakeAt(t *testing.T) {
-	r := Standard()
-	r.DeadAfter = 5 * time.Second
-	h := teams(t, r)
+	h := teams(t, Standard())
 	if res := h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"}); !res.WakeAt.IsZero() {
-		t.Errorf("reading without a deadline: WakeAt = %v", res.WakeAt)
+		t.Errorf("reading: WakeAt = %v", res.WakeAt)
 	}
 	if res := h.ok("p1", ms(1000), protocol.Buzz{TossupID: "t1"}); !res.WakeAt.Equal(t0.Add(ms(1000) + testWindow + tickGrace)) {
 		t.Errorf("window: WakeAt = %v", res.WakeAt)
@@ -468,24 +402,9 @@ func TestWakeAt(t *testing.T) {
 	if res := h.tick(ms(1000) + testWindow + tickGrace); !res.Changed || !res.WakeAt.IsZero() {
 		t.Errorf("window close: %+v", res)
 	}
-	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
-	if res := h.ok("mod", ms(3000), protocol.ReadingFinished{TossupID: "t1"}); !res.WakeAt.Equal(t0.Add(ms(8000))) {
-		t.Errorf("dead deadline: WakeAt = %v", res.WakeAt)
+	if res := h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg}); !res.WakeAt.IsZero() {
+		t.Errorf("after ruling: WakeAt = %v", res.WakeAt)
 	}
-}
-
-func TestDeadAfterExpiresTossup(t *testing.T) {
-	r := Standard()
-	r.DeadAfter = 5 * time.Second
-	h := teams(t, r)
-	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
-	h.ok("mod", ms(3000), protocol.ReadingFinished{TossupID: "t1"})
-	h.tick(ms(7999))
-	h.phase(protocol.PhaseReading)
-	h.buzzAndLock("p3", ms(7999)) // a buzz just before time still counts
-	h.ok("mod", ms(9000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
-	h.tick(ms(9000)) // deadline passed while the ruling was pending
-	h.phase(protocol.PhaseTossupDead)
 }
 
 func TestBonus(t *testing.T) {
@@ -494,7 +413,7 @@ func TestBonus(t *testing.T) {
 	h := teams(t, r)
 	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
 	h.buzzAndLock("p1", ms(1000))
-	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingCorrect})
+	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingPower})
 	b := h.view().Bonus
 	if b == nil || b.TeamID != "T1" || len(b.Parts) != 3 {
 		t.Fatalf("bonus = %+v", b)
@@ -534,12 +453,12 @@ func TestUndo(t *testing.T) {
 		h.ok("mod", ms(3000), protocol.Undo{ActionID: h.lastAction()})
 		h.phase(protocol.PhaseAwaitingRuling)
 		h.wantScores("T1=0 T2=0")
-		h.ok("mod", ms(3100), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+		h.ok("mod", ms(3100), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 		h.wantScores("T1=-5 T2=0")
 	})
 	t.Run("undo a neg also removes buzzes made after it", func(t *testing.T) {
 		h := reach(t, protocol.PhaseAwaitingRuling)
-		h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+		h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNeg})
 		neg := h.lastAction()
 		h.buzzAndLock("p3", ms(3000)) // other team buzzes after the neg
 		h.ok("mod", ms(4000), protocol.Undo{ActionID: neg})
@@ -579,19 +498,6 @@ func TestUndo(t *testing.T) {
 			t.Errorf("roster lost on undo: %+v", v)
 		}
 	})
-	t.Run("undo reading_finished cancels the dead deadline", func(t *testing.T) {
-		r := Standard()
-		r.DeadAfter = 5 * time.Second
-		h := teams(t, r)
-		h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
-		h.ok("mod", ms(1000), protocol.ReadingFinished{TossupID: "t1"})
-		res := h.ok("mod", ms(2000), protocol.Undo{ActionID: h.lastAction()})
-		if !res.WakeAt.IsZero() || h.view().ReadingFinished {
-			t.Errorf("result = %+v, view = %+v", res, h.view())
-		}
-		h.tick(ms(60000))
-		h.phase(protocol.PhaseReading)
-	})
 }
 
 func TestTeams(t *testing.T) {
@@ -617,10 +523,10 @@ func TestIndividualPlay(t *testing.T) {
 	h.reject(protocol.ErrCodeNotAllowed, "mod", 0, protocol.CreateTeam{Name: "Alpha"})
 	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
 	h.buzzAndLock("p1", ms(1000))
-	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingIncorrect})
+	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingNoPenalty})
 	h.wantScores("p1=0 p2=0") // practice: no negs
 	h.buzzAndLock("p2", ms(3000))
-	h.ok("mod", ms(4000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingCorrect})
+	h.ok("mod", ms(4000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingPower})
 	h.wantScores("p1=0 p2=15") // no bonuses: straight to the next tossup
 	h.phase(protocol.PhaseIdle)
 }
@@ -649,8 +555,6 @@ func TestRulesetValidation(t *testing.T) {
 		func(r *Ruleset) { r.Individual, r.Bounceback = true, true },
 		func(r *Ruleset) { r.MaxBuzzWindow = 3 * time.Second },
 		func(r *Ruleset) { r.CorrectionMargin = time.Second },
-		func(r *Ruleset) { r.AudioDelayMax = -1 },
-		func(r *Ruleset) { r.DeadAfter = -1 },
 	}
 	for i, mutate := range bad {
 		r := Standard()

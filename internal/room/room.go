@@ -313,7 +313,7 @@ func (r *Room) handleMessage(s *seat, in Incoming) {
 			return
 		}
 		r.toGame(s, in)
-	case protocol.StartTossup, protocol.MarkPower, protocol.ReadingFinished,
+	case protocol.StartTossup,
 		protocol.Rule, protocol.Undo, protocol.Next, protocol.Protest,
 		protocol.RuleBonus, protocol.CreateTeam, protocol.AssignTeam:
 		if s.role != protocol.RoleModerator {

@@ -461,7 +461,7 @@ func TestTossupOverWebSockets(t *testing.T) {
 		buzzID = s.Game.Buzzes[0].ID
 		return true
 	})
-	send(t, mod, protocol.MsgRule, 2, protocol.Rule{BuzzID: buzzID, Result: protocol.RulingCorrect})
+	send(t, mod, protocol.MsgRule, 2, protocol.Rule{BuzzID: buzzID, Result: protocol.RulingPower})
 	stateUntil(t, alice, func(s protocol.RoomState) bool {
 		return s.Game.Phase == protocol.PhaseIdle && len(s.Game.Teams) == 1 && s.Game.Teams[0].Score == 15
 	})

@@ -137,7 +137,7 @@ func TestGameThroughRoom(t *testing.T) {
 			t.Fatalf("locked %+v, state %+v", locked, s.Game)
 		}
 		buzz := s.Game.Buzzes[0]
-		if buzz.OffsetMs != 1000 || !buzz.Power {
+		if buzz.OffsetMs != 1000 {
 			t.Errorf("buzz = %+v", buzz)
 		}
 
@@ -153,7 +153,7 @@ func TestGameThroughRoom(t *testing.T) {
 			t.Fatalf("game changed on its own: %+v", s)
 		}
 
-		mod.send(protocol.Rule{BuzzID: buzz.ID, Result: protocol.RulingCorrect})
+		mod.send(protocol.Rule{BuzzID: buzz.ID, Result: protocol.RulingPower})
 		s = mod.state()
 		if s.Game.Phase != protocol.PhaseBonus || s.Game.Teams[0].Score != 15 {
 			t.Fatalf("after ruling: %+v", s.Game)

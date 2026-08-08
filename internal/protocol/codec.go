@@ -25,8 +25,6 @@ var clientSpecs = []Spec{
 	{MsgBuzz, Buzz{}, true},
 	{MsgPong, Pong{}, false}, // consumed by the connection, never resent, so no seq
 	{MsgStartTossup, StartTossup{}, true},
-	{MsgMarkPower, MarkPower{}, true},
-	{MsgReadingFinished, ReadingFinished{}, true},
 	{MsgRule, Rule{}, true},
 	{MsgUndo, Undo{}, true},
 	{MsgNext, Next{}, true},
@@ -190,22 +188,13 @@ func (m Pong) Validate() error {
 	return nil
 }
 
-func (m StartTossup) Validate() error     { return requireID("tossupId", m.TossupID) }
-func (m MarkPower) Validate() error       { return validateMark(m.TossupID, m.ClientTimeMs) }
-func (m ReadingFinished) Validate() error { return validateMark(m.TossupID, m.ClientTimeMs) }
-
-func validateMark(tossupID string, clientMs float64) error {
-	if clientMs < 0 {
-		return errors.New("clientTimeMs must be non-negative")
-	}
-	return requireID("tossupId", tossupID)
-}
-func (m Next) Validate() error { return requireID("tossupId", m.TossupID) }
-func (m Undo) Validate() error { return requireID("actionId", m.ActionID) }
+func (m StartTossup) Validate() error { return requireID("tossupId", m.TossupID) }
+func (m Next) Validate() error        { return requireID("tossupId", m.TossupID) }
+func (m Undo) Validate() error        { return requireID("actionId", m.ActionID) }
 
 func (m Rule) Validate() error {
 	switch m.Result {
-	case RulingCorrect, RulingIncorrect, RulingNoPenalty:
+	case RulingPower, RulingCorrect, RulingNeg, RulingNoPenalty:
 	default:
 		return fmt.Errorf("unknown result %q", m.Result)
 	}

@@ -21,7 +21,7 @@ type Ruleset struct {
 	Individual      bool // every player is their own team
 	TossupPoints    int
 	PowerPoints     int // 0 disables powers
-	NegPoints       int // applied to interrupts only; 0 disables negs
+	NegPoints       int // 0 disables negs
 	Lockout         Lockout
 	BonusParts      int // 0 disables bonuses
 	BonusPartPoints int
@@ -34,18 +34,11 @@ type Ruleset struct {
 	// CorrectionMargin is added to a connection's RTT to cap how much
 	// earlier than its arrival a message may be judged.
 	CorrectionMargin time.Duration
-	// AudioDelayMax is the longest plausible voice-chat delay. A press within
-	// this long after the power mark or end of reading is a close call.
-	AudioDelayMax time.Duration
-	// DeadAfter kills the tossup this long after reading finishes; 0 means
-	// the moderator decides.
-	DeadAfter time.Duration
 }
 
 func defaultTiming(r Ruleset) Ruleset {
 	r.MaxBuzzWindow = 100 * time.Millisecond
 	r.CorrectionMargin = 10 * time.Millisecond
-	r.AudioDelayMax = 300 * time.Millisecond
 	return r
 }
 
@@ -87,10 +80,6 @@ func (r Ruleset) Validate() error {
 		return errors.New("max buzz window must be 0-2s")
 	case r.CorrectionMargin < 0 || r.CorrectionMargin > 100*time.Millisecond:
 		return errors.New("correction margin must be 0-100ms")
-	case r.AudioDelayMax < 0 || r.AudioDelayMax > 2*time.Second:
-		return errors.New("audio delay max must be 0-2s")
-	case r.DeadAfter < 0:
-		return errors.New("dead-after must be non-negative")
 	}
 	return nil
 }

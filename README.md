@@ -52,5 +52,5 @@ What's not fixed: voice-chat delay. In about half of close races, the player
 who *reacted* fastest after hearing the clue isn't the one who pressed first,
 because their audio arrived later. Measuring that needs the moderator's audio
 to go through QBuzzer (WebRTC playout timestamps), a planned stretch goal.
-Powers and negs near the moderator's marks are flagged as close calls for the
-moderator to decide rather than guessed.
+Powers and negs are the moderator's call (Power / 10 / Neg / 0 buttons): without
+the audio, QBuzzer can't know which word a player heard.

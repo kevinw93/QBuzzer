@@ -55,8 +55,8 @@ func (g *Game) PlayerJoined(playerID string) {
 }
 
 func (g *Game) Handle(cmd room.Command) room.Result {
-	// Deadlines that passed before this command take effect first, so a buzz
-	// stamped after the window closed cannot join it.
+	// A window whose deadline passed before this command closes first, so a buzz
+	// arriving after it cannot join.
 	effects, changed := g.advance(cmd.ReceivedAt)
 
 	if u, ok := cmd.Msg.(protocol.Undo); ok {
@@ -74,10 +74,6 @@ func (g *Game) Handle(cmd room.Command) room.Result {
 		if g.s.phase == protocol.PhaseReading {
 			e.window = g.window(cmd.ReceivedAt)
 		}
-	case protocol.MarkPower:
-		e.at = msBefore(cmd.ReceivedAt, g.judge(cmd, m.ClientTimeMs).CorrectionMs)
-	case protocol.ReadingFinished:
-		e.at = msBefore(cmd.ReceivedAt, g.judge(cmd, m.ClientTimeMs).CorrectionMs)
 	}
 	eff, err := g.record(e)
 	return g.result(changed || err == nil, append(effects, eff...), err)
@@ -149,41 +145,25 @@ func step(r Ruleset, s *state, e event, replaying bool) ([]protocol.Effect, erro
 	return effects, err
 }
 
-// advance applies deadlines due at or before now, stamped with their deadline
-// rather than now so replay doesn't depend on when the timer fired.
+// advance closes a buzz window whose deadline is due at or before now,
+// stamped with the deadline rather than now so replay doesn't depend on when
+// the timer fired.
 func (g *Game) advance(now time.Time) ([]protocol.Effect, bool) {
-	var effects []protocol.Effect
-	changed := false
-	for {
-		var e event
-		switch {
-		case g.s.phase == protocol.PhaseBuzzWindow && !now.Before(g.s.windowEnds.Add(tickGrace)):
-			e = event{at: g.s.windowEnds, msg: windowClosed{}}
-		case g.deadlineAt() != (time.Time{}) && !now.Before(g.deadlineAt()):
-			e = event{at: g.deadlineAt(), msg: tossupExpired{}}
-		default:
-			return effects, changed
-		}
-		eff, err := g.record(e)
-		if err != nil {
-			panic(fmt.Sprintf("game: deadline: %v", err))
-		}
-		effects, changed = append(effects, eff...), true
+	if g.s.phase != protocol.PhaseBuzzWindow || now.Before(g.s.windowEnds.Add(tickGrace)) {
+		return nil, false
 	}
-}
-
-func (g *Game) deadlineAt() time.Time {
-	if g.s.phase != protocol.PhaseReading || g.s.finishedAt.IsZero() || g.rules.DeadAfter == 0 {
-		return time.Time{}
+	eff, err := g.record(event{at: g.s.windowEnds, msg: windowClosed{}})
+	if err != nil {
+		panic(fmt.Sprintf("game: closing window: %v", err))
 	}
-	return g.s.finishedAt.Add(g.rules.DeadAfter)
+	return eff, true
 }
 
 func (g *Game) wakeAt() time.Time {
 	if g.s.phase == protocol.PhaseBuzzWindow {
 		return g.s.windowEnds.Add(tickGrace)
 	}
-	return g.deadlineAt()
+	return time.Time{}
 }
 
 // undo reverts the latest undoable action and every later non-roster event,

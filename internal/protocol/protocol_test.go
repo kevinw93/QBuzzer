@@ -11,32 +11,29 @@ import (
 // message is registered without a sample, so new messages get round-trip
 // coverage automatically.
 var samples = map[MsgType]any{
-	MsgJoin:            Join{ProtocolVersion: ProtocolVersion, Role: RolePlayer, Name: "Alice", Token: "tok"},
-	MsgSetName:         SetName{Name: "Bob"},
-	MsgBuzz:            Buzz{TossupID: "t3", ClientTimeMs: 1234.5},
-	MsgPong:            Pong{PingID: 9, ClientRecvMs: 100.25, ClientSendMs: 100.75},
-	MsgStartTossup:     StartTossup{TossupID: "t3"},
-	MsgMarkPower:       MarkPower{TossupID: "t3", ClientTimeMs: 1.76e12 + 0.25},
-	MsgReadingFinished: ReadingFinished{TossupID: "t3"},
-	MsgRule:            Rule{BuzzID: "b7", Result: RulingIncorrect, Neg: new(bool)},
-	MsgUndo:            Undo{ActionID: "a12"},
-	MsgNext:            Next{TossupID: "t3"},
-	MsgProtest:         Protest{TossupID: "t3", Note: "answer was acceptable: “Gödel”"},
-	MsgRuleBonus:       RuleBonus{BonusID: "B3", Part: 2, BouncebackTeamID: "T2"},
-	MsgCreateTeam:      CreateTeam{Name: "Gödel Escher"},
-	MsgAssignTeam:      AssignTeam{PlayerID: "p2", TeamID: "T1"},
-	MsgChooseTeam:      ChooseTeam{TeamID: "T1"},
+	MsgJoin:        Join{ProtocolVersion: ProtocolVersion, Role: RolePlayer, Name: "Alice", Token: "tok"},
+	MsgSetName:     SetName{Name: "Bob"},
+	MsgBuzz:        Buzz{TossupID: "t3", ClientTimeMs: 1234.5},
+	MsgPong:        Pong{PingID: 9, ClientRecvMs: 100.25, ClientSendMs: 100.75},
+	MsgStartTossup: StartTossup{TossupID: "t3"},
+	MsgRule:        Rule{BuzzID: "b7", Result: RulingNeg},
+	MsgUndo:        Undo{ActionID: "a12"},
+	MsgNext:        Next{TossupID: "t3"},
+	MsgProtest:     Protest{TossupID: "t3", Note: "answer was acceptable: “Gödel”"},
+	MsgRuleBonus:   RuleBonus{BonusID: "B3", Part: 2, BouncebackTeamID: "T2"},
+	MsgCreateTeam:  CreateTeam{Name: "Gödel Escher"},
+	MsgAssignTeam:  AssignTeam{PlayerID: "p2", TeamID: "T1"},
+	MsgChooseTeam:  ChooseTeam{TeamID: "T1"},
 
 	MsgWelcome: Welcome{PlayerID: "p1", Role: RolePlayer, SessionToken: "tok", LastSeq: 41},
 	MsgState: RoomState{
 		Epoch: "e1", Version: 5, Code: "ABC234", ModeratorConnected: true,
 		Players: []PlayerView{{ID: "p1", Name: "Alice", Connected: true}, {ID: "p2", Name: "Bob"}},
 		Game: GameView{
-			Phase: PhaseBonus, TossupID: "t3", TossupNumber: 3, PowerMarked: true, ReadingFinished: false,
+			Phase: PhaseBonus, TossupID: "t3", TossupNumber: 3,
 			Buzzes: []BuzzView{
 				{ID: "b6", PlayerID: "p2", TeamID: "T2", OffsetMs: 812.5, Status: BuzzStatusLost},
-				{ID: "b7", PlayerID: "p1", TeamID: "T1", OffsetMs: 820, CorrectionMs: 41.5, Status: BuzzStatusCorrect,
-					PowerHint: HintClose, PowerGapMs: ptr(12.5), InterruptHint: HintYes, Power: true, Interrupt: true, Points: 15},
+				{ID: "b7", PlayerID: "p1", TeamID: "T1", OffsetMs: 820, CorrectionMs: 41.5, Status: BuzzStatusCorrect, Power: true, Points: 15},
 			},
 			LockedOut:    []string{"T2"},
 			Bonus:        &BonusView{ID: "B3", TeamID: "T1", Parts: []BonusPartView{{Ruled: true, Correct: true}, {Ruled: true, BouncebackTeamID: "T2"}, {}}},
@@ -48,7 +45,7 @@ var samples = map[MsgType]any{
 	MsgError:        ErrorMessage{Code: ErrCodeStale, Message: "buzz b6 is no longer pending", Seq: 12},
 	MsgPing:         Ping{ID: 9},
 	MsgBuzzLocked:   BuzzLocked{Version: 6, TossupID: "t3", BuzzID: "b7", PlayerID: "p2"},
-	MsgRuled:        Ruled{Version: 7, BuzzID: "b7", PlayerID: "p2", Result: RulingCorrect, Points: 15},
+	MsgRuled:        Ruled{Version: 7, BuzzID: "b7", PlayerID: "p2", Result: RulingPower, Points: 15},
 	MsgScoreChanged: ScoreChanged{Version: 7, TeamID: "T2", Delta: -5},
 }
 
@@ -145,7 +142,7 @@ func TestWireFormat(t *testing.T) {
 					Buzzes: []BuzzView{}, LockedOut: []string{}, Teams: []TeamView{}, Protests: []ProtestView{},
 				}})
 			},
-			`{"type":"state","payload":{"epoch":"e","version":1,"code":"ABC234","moderatorConnected":false,"players":[],"game":{"phase":"idle","tossupId":"t1","tossupNumber":1,"powerMarked":false,"readingFinished":false,"buzzes":[],"lockedOut":[],"teams":[],"protests":[],"individual":false}}}`,
+			`{"type":"state","payload":{"epoch":"e","version":1,"code":"ABC234","moderatorConnected":false,"players":[],"game":{"phase":"idle","tossupId":"t1","tossupNumber":1,"buzzes":[],"lockedOut":[],"teams":[],"protests":[],"individual":false}}}`,
 		},
 		{
 			"error",
@@ -299,5 +296,3 @@ func TestEffectsAreRegisteredServerMessages(t *testing.T) {
 		}
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

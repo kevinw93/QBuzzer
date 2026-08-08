@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
-	"github.com/kevinw93/QBuzzer/internal/protocol"
 )
 
 func TestPressTime(t *testing.T) {
@@ -50,22 +49,5 @@ func TestWindow(t *testing.T) {
 	}
 	if w := Window([]float64{20, 900}, 250); w != 250 {
 		t.Errorf("ceiling: %v", w)
-	}
-}
-
-func TestClassify(t *testing.T) {
-	tests := []struct {
-		press float64
-		want  protocol.Hint
-	}{
-		{999, protocol.HintYes},    // before the mark
-		{1000, protocol.HintClose}, // exactly at it: the player may have heard it late
-		{1300, protocol.HintClose}, // at the audio delay limit
-		{1301, protocol.HintNo},
-	}
-	for _, tt := range tests {
-		if got := Classify(tt.press, 1000, 300); got != tt.want {
-			t.Errorf("press %v: %q, want %q", tt.press, got, tt.want)
-		}
 	}
 }

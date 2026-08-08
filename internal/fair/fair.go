@@ -3,10 +3,7 @@
 // scale.
 package fair
 
-import (
-	"github.com/kevinw93/QBuzzer/internal/clock"
-	"github.com/kevinw93/QBuzzer/internal/protocol"
-)
+import "github.com/kevinw93/QBuzzer/internal/clock"
 
 // Press is a message's judged time.
 type Press struct {
@@ -53,19 +50,4 @@ func Window(caps []float64, maxMs float64) float64 {
 		w = max(w, c)
 	}
 	return min(w, maxMs)
-}
-
-// Classify compares a press with a moderator mark (the power mark, or the end
-// of reading). Players hear the moderator after an unknown audio delay of up
-// to audioDelayMaxMs, so a press up to that long after the mark may still
-// have come before the player heard it: that zone is a close call.
-func Classify(pressMs, markMs, audioDelayMaxMs float64) protocol.Hint {
-	switch gap := pressMs - markMs; {
-	case gap < 0:
-		return protocol.HintYes
-	case gap <= audioDelayMaxMs:
-		return protocol.HintClose
-	default:
-		return protocol.HintNo
-	}
 }

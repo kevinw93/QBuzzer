@@ -8,8 +8,6 @@ export type ClientMessage =
   | { type: 'buzz'; seq: number; payload: p.Buzz }
   | { type: 'pong'; payload: p.Pong }
   | { type: 'start_tossup'; seq: number; payload: p.StartTossup }
-  | { type: 'mark_power'; seq: number; payload: p.MarkPower }
-  | { type: 'reading_finished'; seq: number; payload: p.ReadingFinished }
   | { type: 'rule'; seq: number; payload: p.Rule }
   | { type: 'undo'; seq: number; payload: p.Undo }
   | { type: 'next'; seq: number; payload: p.Next }
