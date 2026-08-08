@@ -23,7 +23,10 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 // Room tests run inside synctest bubbles: time is virtual, so timeouts are
 // exact and instant, and synctest.Wait() means "the room has processed
 // everything sent so far".
-const timeout = 2 * time.Second
+const (
+	timeout      = 2 * time.Second
+	testPassword = "hunter22"
+)
 
 func newTestHub(t *testing.T, mod func(*Config)) (*Hub, context.CancelFunc) {
 	t.Helper()
@@ -40,7 +43,7 @@ func newTestHub(t *testing.T, mod func(*Config)) (*Hub, context.CancelFunc) {
 func newTestRoom(t *testing.T, mod func(*Config)) *Room {
 	t.Helper()
 	h, _ := newTestHub(t, mod)
-	r, err := h.Create()
+	r, err := h.Create(testPassword)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +72,7 @@ func join(t *testing.T, r *Room, name string) (*Client, protocol.Welcome) {
 func joinModerator(t *testing.T, r *Room) *Client {
 	t.Helper()
 	c, w := joinAs(t, r, protocol.Join{
-		ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Token: r.ModeratorToken(),
+		ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Password: testPassword,
 	})
 	if w.Role != protocol.RoleModerator {
 		t.Fatalf("welcome role = %q", w.Role)
@@ -240,8 +243,8 @@ func TestJoinSendsWelcomeThenState(t *testing.T) {
 func TestEpochsDifferBetweenRooms(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, _ := newTestHub(t, nil)
-		r1, _ := h.Create()
-		r2, _ := h.Create()
+		r1, _ := h.Create(testPassword)
+		r2, _ := h.Create(testPassword)
 		if r1.epoch == "" || r1.epoch == r2.epoch {
 			t.Errorf("epochs %q and %q", r1.epoch, r2.epoch)
 		}
@@ -343,7 +346,7 @@ func TestJoinRejections(t *testing.T) {
 		}{
 			{"seats full", playerJoin("Bob", ""), ErrFull},
 			{"unknown session", playerJoin("", "not-a-token"), ErrUnknownSession},
-			{"wrong moderator token", protocol.Join{ProtocolVersion: 1, Role: protocol.RoleModerator, Token: w.SessionToken}, ErrUnauthorized},
+			{"wrong moderator password", protocol.Join{ProtocolVersion: 1, Role: protocol.RoleModerator, Password: w.SessionToken}, ErrUnauthorized},
 			{"bad name", playerJoin("\x00", w.SessionToken), protocol.ErrInvalidName},
 		} {
 			if err := r.Join(r.NewClient(), tt.join); !errors.Is(err, tt.want) {
@@ -535,7 +538,7 @@ func TestIdleTimeoutIsExact(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, _ := newTestHub(t, nil)
 		idle := h.cfg.IdleTimeout
-		r, err := h.Create()
+		r, err := h.Create(testPassword)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -571,7 +574,7 @@ func TestIdleTimeoutIsExact(t *testing.T) {
 func TestNeverJoinedRoomIdlesOut(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, _ := newTestHub(t, nil)
-		r, _ := h.Create()
+		r, _ := h.Create(testPassword)
 		time.Sleep(h.cfg.IdleTimeout)
 		synctest.Wait()
 		if !isDone(r) {
@@ -592,7 +595,7 @@ func isDone(r *Room) bool {
 func TestShutdownClosesClientsAndStopsCreation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, cancel := newTestHub(t, nil)
-		r, err := h.Create()
+		r, err := h.Create(testPassword)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -603,34 +606,34 @@ func TestShutdownClosesClientsAndStopsCreation(t *testing.T) {
 			t.Errorf("closed with %v, want %v", got, ReasonRoomClosed)
 		}
 		h.Wait()
-		if _, err := h.Create(); !errors.Is(err, ErrClosed) {
+		if _, err := h.Create(testPassword); !errors.Is(err, ErrClosed) {
 			t.Errorf("create after shutdown: err = %v", err)
 		}
 	})
 }
 
-func TestHubLimitsCodesAndTokens(t *testing.T) {
+func TestHubLimitsCodesAndPasswords(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, _ := newTestHub(t, func(c *Config) { c.MaxRooms = 50 })
-		codes, tokens := map[string]bool{}, map[string]bool{}
+		if _, err := h.Create("short"); !errors.Is(err, protocol.ErrInvalidPassword) {
+			t.Errorf("short password: err = %v", err)
+		}
+		codes := map[string]bool{}
 		for range 50 {
-			r, err := h.Create()
+			r, err := h.Create(testPassword)
 			if err != nil {
 				t.Fatal(err)
 			}
-			code, tok := r.Code(), r.ModeratorToken()
+			code := r.Code()
 			if len(code) != codeLen || strings.Trim(code, codeAlphabet) != "" || codes[code] {
 				t.Errorf("bad or duplicate code %q", code)
 			}
-			if len(tok) < 26 || tokens[tok] {
-				t.Errorf("bad or duplicate moderator token %q", tok)
-			}
-			codes[code], tokens[tok] = true, true
+			codes[code] = true
 			if got, ok := h.Get(strings.ToLower(code)); !ok || got != r {
 				t.Errorf("lowercase lookup of %q failed", code)
 			}
 		}
-		if _, err := h.Create(); !errors.Is(err, ErrTooManyRooms) {
+		if _, err := h.Create(testPassword); !errors.Is(err, ErrTooManyRooms) {
 			t.Errorf("err = %v, want ErrTooManyRooms", err)
 		}
 	})
@@ -752,6 +755,65 @@ func TestClockUpdatesReachGameForPlayersOnly(t *testing.T) {
 		defer g.mu.Unlock()
 		if len(g.clocks) != 1 || g.clocks[0] != w.PlayerID {
 			t.Errorf("clock updates = %v, want only %s", g.clocks, w.PlayerID)
+		}
+	})
+}
+
+func moderatorJoin(password string) protocol.Join {
+	return protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Password: password}
+}
+
+func TestModeratorPasswordGuessingIsLimited(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newTestRoom(t, nil)
+		try := func(pw string) error { return r.Join(r.NewClient(), moderatorJoin(pw)) }
+
+		for i := range maxModeratorFailures {
+			if err := try(fmt.Sprint("guess", i)); !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("guess %d: err = %v", i, err)
+			}
+		}
+		if err := try(testPassword); !errors.Is(err, ErrRateLimited) {
+			t.Fatalf("right password during lockout: err = %v, want ErrRateLimited", err)
+		}
+		time.Sleep(moderatorLockout)
+		if err := try(testPassword); err != nil {
+			t.Fatalf("after lockout: %v", err)
+		}
+	})
+}
+
+func TestOldPasswordFailuresExpire(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newTestRoom(t, nil)
+		try := func(pw string) error { return r.Join(r.NewClient(), moderatorJoin(pw)) }
+		for range maxModeratorFailures - 1 {
+			_ = try("wrong-one")
+		}
+		time.Sleep(moderatorLockout)
+		for range maxModeratorFailures - 1 {
+			_ = try("wrong-two")
+		}
+		if err := try(testPassword); err != nil {
+			t.Fatalf("failures spread over more than a minute locked the room: %v", err)
+		}
+	})
+}
+
+func TestModeratorHandoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newTestRoom(t, nil)
+		first := joinModerator(t, r)
+		second, w := joinAs(t, r, moderatorJoin(testPassword))
+		if w.Role != protocol.RoleModerator || w.SessionToken != "" {
+			t.Errorf("welcome = %+v", w)
+		}
+		if got := waitClosed(t, first); got != ReasonReplaced {
+			t.Errorf("first moderator closed with %v, want %v", got, ReasonReplaced)
+		}
+		s := stateUntil(t, second, func(s protocol.RoomState) bool { return s.ModeratorConnected })
+		if !s.ModeratorConnected {
+			t.Error("moderator not connected after handoff")
 		}
 	})
 }

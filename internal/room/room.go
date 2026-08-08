@@ -3,6 +3,7 @@ package room
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -16,7 +17,8 @@ import (
 var (
 	ErrClosed         = errors.New("room closed")
 	ErrFull           = errors.New("room full")
-	ErrUnauthorized   = errors.New("moderator token rejected")
+	ErrUnauthorized   = errors.New("wrong moderator password")
+	ErrRateLimited    = errors.New("too many wrong moderator passwords; try again in a minute")
 	ErrUnknownSession = errors.New("unknown session")
 )
 
@@ -68,12 +70,12 @@ type seat struct {
 // connection are handled in the order they were read; across connections,
 // inbox order need not match ReceivedAt order.
 type Room struct {
-	code           string
-	epoch          string
-	moderatorToken string
-	cfg            Config
-	inbox          chan any
-	done           chan struct{} // closed when run returns
+	code          string
+	epoch         string
+	moderatorPass [sha256.Size]byte // SHA-256 of the password, so comparison is constant-time and length-independent
+	cfg           Config
+	inbox         chan any
+	done          chan struct{} // closed when run returns
 
 	game      Game
 	wake      *time.Timer // fires at the game's latest WakeAt; created stopped in run
@@ -83,30 +85,30 @@ type Room struct {
 	byClient  map[*Client]*seat
 	nextID    int
 	version   uint64
+
+	modFailures    []time.Time // wrong passwords in the last moderatorLockout
+	modLockedUntil time.Time
 }
 
-func newRoom(code, moderatorToken string, cfg Config) *Room {
+func newRoom(code, moderatorPassword string, cfg Config) *Room {
 	var g Game = unimplementedGame{}
 	if cfg.NewGame != nil {
 		g = cfg.NewGame()
 	}
 	return &Room{
-		code:           code,
-		epoch:          rand.Text()[:8],
-		moderatorToken: moderatorToken,
-		cfg:            cfg,
-		inbox:          make(chan any, 64),
-		done:           make(chan struct{}),
-		game:           g,
-		byToken:        make(map[string]*seat),
-		byClient:       make(map[*Client]*seat),
+		code:          code,
+		epoch:         rand.Text()[:8],
+		moderatorPass: sha256.Sum256([]byte(moderatorPassword)),
+		cfg:           cfg,
+		inbox:         make(chan any, 64),
+		done:          make(chan struct{}),
+		game:          g,
+		byToken:       make(map[string]*seat),
+		byClient:      make(map[*Client]*seat),
 	}
 }
 
 func (r *Room) Code() string { return r.code }
-
-// ModeratorToken grants moderator rights in this room.
-func (r *Room) ModeratorToken() string { return r.moderatorToken }
 
 // Done is closed once the room has shut down.
 func (r *Room) Done() <-chan struct{} { return r.done }
@@ -246,11 +248,11 @@ func (r *Room) seatFor(j protocol.Join) (*seat, error) {
 
 	switch j.Role {
 	case protocol.RoleModerator:
-		if subtle.ConstantTimeCompare([]byte(j.Token), []byte(r.moderatorToken)) != 1 {
-			return nil, ErrUnauthorized
+		if err := r.checkModeratorPassword(j.Password, time.Now()); err != nil {
+			return nil, err
 		}
 		if r.moderator == nil {
-			r.moderator = &seat{id: "mod", role: protocol.RoleModerator, name: "Moderator", token: r.moderatorToken}
+			r.moderator = &seat{id: "mod", role: protocol.RoleModerator, name: "Moderator"}
 		}
 		if name != "" {
 			r.moderator.name = name
@@ -435,4 +437,33 @@ func encode(typ protocol.MsgType, v any) []byte {
 		panic(fmt.Sprintf("room: encoding %s: %v", typ, err))
 	}
 	return b
+}
+
+const (
+	maxModeratorFailures = 5
+	moderatorLockout     = time.Minute
+)
+
+// checkModeratorPassword refuses all moderator joins for moderatorLockout
+// after maxModeratorFailures wrong passwords within moderatorLockout, so a
+// player can't guess the password by trying many.
+func (r *Room) checkModeratorPassword(password string, now time.Time) error {
+	if now.Before(r.modLockedUntil) {
+		return ErrRateLimited
+	}
+	sum := sha256.Sum256([]byte(password))
+	if subtle.ConstantTimeCompare(sum[:], r.moderatorPass[:]) == 1 {
+		return nil
+	}
+	recent := r.modFailures[:0]
+	for _, t := range r.modFailures {
+		if now.Sub(t) < moderatorLockout {
+			recent = append(recent, t)
+		}
+	}
+	r.modFailures = append(recent, now)
+	if len(r.modFailures) >= maxModeratorFailures {
+		r.modLockedUntil, r.modFailures = now.Add(moderatorLockout), nil
+	}
+	return ErrUnauthorized
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kevinw93/QBuzzer/internal/protocol"
 )
 
 type Config struct {
@@ -47,7 +49,10 @@ func NewHub(ctx context.Context, cfg Config, log *slog.Logger) *Hub {
 	return &Hub{ctx: ctx, cfg: cfg, log: log, rooms: make(map[string]*Room)}
 }
 
-func (h *Hub) Create() (*Room, error) {
+func (h *Hub) Create(password string) (*Room, error) {
+	if err := protocol.ValidatePassword(password); err != nil {
+		return nil, err
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed || h.ctx.Err() != nil {
@@ -60,7 +65,7 @@ func (h *Hub) Create() (*Room, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := newRoom(code, rand.Text(), h.cfg)
+	r := newRoom(code, password, h.cfg)
 	h.rooms[code] = r
 	h.wg.Add(1)
 	go func() {

@@ -242,6 +242,8 @@ func joinErrStatus(err error) websocket.StatusCode {
 		return websocket.StatusGoingAway
 	case errors.Is(err, room.ErrUnauthorized):
 		return websocket.StatusCode(protocol.CloseCodeUnauthorized)
+	case errors.Is(err, room.ErrRateLimited):
+		return websocket.StatusCode(protocol.CloseCodeRateLimited)
 	case errors.Is(err, room.ErrUnknownSession):
 		return websocket.StatusCode(protocol.CloseCodeUnknownSession)
 	default:

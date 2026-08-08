@@ -61,22 +61,26 @@ type CloseCode int
 
 const (
 	CloseCodeReloadRequired CloseCode = 4000 // protocol version mismatch; reload the page
-	CloseCodeUnauthorized   CloseCode = 4001 // moderator token rejected
+	CloseCodeUnauthorized   CloseCode = 4001 // wrong moderator password
 	CloseCodeUnknownSession CloseCode = 4002 // session token unknown to this room; rejoin without it
 	CloseCodeReplaced       CloseCode = 4003 // the same session connected elsewhere; do not reconnect
 	CloseCodeTooSlow        CloseCode = 4004 // outbound buffer overflowed; reconnect
 	CloseCodeJoinRequired   CloseCode = 4005 // first message was not a valid join
+	CloseCodeRateLimited    CloseCode = 4006 // too many wrong moderator passwords; wait a minute
 )
 
 // ---- Client -> server payloads ----
 
-// Join must be the first message on a connection. Token resumes an existing
-// session (players) or proves moderator rights (moderators).
+// Join must be the first message on a connection. Players resume a session
+// with Token; moderators authenticate with the room's Password. Joining as
+// moderator replaces any existing moderator connection, which is how a room
+// is handed to another moderator.
 type Join struct {
 	ProtocolVersion int    `json:"protocolVersion"`
 	Role            Role   `json:"role"`
 	Name            string `json:"name,omitempty"` // required for new players
 	Token           string `json:"token,omitempty"`
+	Password        string `json:"password,omitempty"`
 }
 
 type SetName struct {
@@ -218,12 +222,21 @@ type ScoreChanged struct {
 
 // ---- HTTP ----
 
-// CreateRoomResponse is the body of POST /api/rooms. ModeratorToken is shown
-// only once; whoever holds it can moderate the room.
-type CreateRoomResponse struct {
-	Code           string `json:"code"`
-	ModeratorToken string `json:"moderatorToken"`
+// CreateRoomRequest is the body of POST /api/rooms. Whoever knows the
+// password can moderate the room.
+type CreateRoomRequest struct {
+	ModeratorPassword string `json:"moderatorPassword"`
 }
+
+type CreateRoomResponse struct {
+	Code string `json:"code"`
+}
+
+// Moderator passwords are measured in runes.
+const (
+	MinPasswordLen = 6
+	MaxPasswordLen = 64
+)
 
 // MaxNameLen is measured in runes.
 const MaxNameLen = 32

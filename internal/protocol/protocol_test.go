@@ -204,7 +204,7 @@ func TestDecodeClientRejects(t *testing.T) {
 		{"long protest", `{"type":"protest","seq":1,"payload":{"tossupId":"t1","note":"` + strings.Repeat("n", MaxProtestNoteLen+1) + `"}}`, "note"},
 		{"blank name", `{"type":"set_name","seq":1,"payload":{"name":"  "}}`, "name must be"},
 		{"unknown role", `{"type":"join","payload":{"protocolVersion":1,"role":"admin","name":"A"}}`, "unknown role"},
-		{"moderator without token", `{"type":"join","payload":{"protocolVersion":1,"role":"moderator"}}`, "token"},
+		{"moderator without password", `{"type":"join","payload":{"protocolVersion":1,"role":"moderator"}}`, "password"},
 		{"new player without name", `{"type":"join","payload":{"protocolVersion":1,"role":"player"}}`, "name"},
 		{"oversized token", `{"type":"join","payload":{"protocolVersion":1,"role":"player","token":"` + strings.Repeat("t", 65) + `"}}`, "token too long"},
 	}
@@ -293,6 +293,21 @@ func TestEffectsAreRegisteredServerMessages(t *testing.T) {
 		}
 		if reflect.ValueOf(e).FieldByName("Version").Uint() != 0 {
 			t.Errorf("%T: WithVersion mutated the receiver", e)
+		}
+	}
+}
+
+func TestValidatePassword(t *testing.T) {
+	for pw, ok := range map[string]bool{
+		"hunter":                true,
+		"ümlaut":                true, // six runes
+		"short":                 false,
+		strings.Repeat("p", 64): true,
+		strings.Repeat("p", 65): false,
+		"\xffinvalid":           false,
+	} {
+		if err := ValidatePassword(pw); (err == nil) != ok {
+			t.Errorf("ValidatePassword(%q) = %v", pw, err)
 		}
 	}
 }

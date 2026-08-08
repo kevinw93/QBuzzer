@@ -98,12 +98,12 @@ func TestGameThroughRoom(t *testing.T) {
 		cfg.NewGame = func() room.Game { return game.New(rules) }
 		hub := room.NewHub(ctx, cfg, slog.New(slog.DiscardHandler))
 		t.Cleanup(func() { cancel(); hub.Wait() })
-		r, err := hub.Create()
+		r, err := hub.Create("hunter22")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		mod := connect(t, r, protocol.Join{Role: protocol.RoleModerator, Token: r.ModeratorToken()})
+		mod := connect(t, r, protocol.Join{Role: protocol.RoleModerator, Password: "hunter22"})
 		alice := connect(t, r, protocol.Join{Role: protocol.RolePlayer, Name: "Alice"})
 		bob := connect(t, r, protocol.Join{Role: protocol.RolePlayer, Name: "Bob"})
 		mod.send(protocol.CreateTeam{Name: "Alpha"})

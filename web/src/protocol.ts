@@ -60,21 +60,25 @@ export type Role = typeof RolePlayer | typeof RoleModerator;
  * for applications).
  */
 export const CloseCodeReloadRequired = 4000; // protocol version mismatch; reload the page
-export const CloseCodeUnauthorized = 4001; // moderator token rejected
+export const CloseCodeUnauthorized = 4001; // wrong moderator password
 export const CloseCodeUnknownSession = 4002; // session token unknown to this room; rejoin without it
 export const CloseCodeReplaced = 4003; // the same session connected elsewhere; do not reconnect
 export const CloseCodeTooSlow = 4004; // outbound buffer overflowed; reconnect
 export const CloseCodeJoinRequired = 4005; // first message was not a valid join
-export type CloseCode = typeof CloseCodeReloadRequired | typeof CloseCodeUnauthorized | typeof CloseCodeUnknownSession | typeof CloseCodeReplaced | typeof CloseCodeTooSlow | typeof CloseCodeJoinRequired;
+export const CloseCodeRateLimited = 4006; // too many wrong moderator passwords; wait a minute
+export type CloseCode = typeof CloseCodeReloadRequired | typeof CloseCodeUnauthorized | typeof CloseCodeUnknownSession | typeof CloseCodeReplaced | typeof CloseCodeTooSlow | typeof CloseCodeJoinRequired | typeof CloseCodeRateLimited;
 /**
- * Join must be the first message on a connection. Token resumes an existing
- * session (players) or proves moderator rights (moderators).
+ * Join must be the first message on a connection. Players resume a session
+ * with Token; moderators authenticate with the room's Password. Joining as
+ * moderator replaces any existing moderator connection, which is how a room
+ * is handed to another moderator.
  */
 export interface Join {
   protocolVersion: number /* int */;
   role: Role;
   name?: string; // required for new players
   token?: string;
+  password?: string;
 }
 export interface SetName {
   name: string;
@@ -209,13 +213,21 @@ export interface ScoreChanged {
   delta: number /* int */;
 }
 /**
- * CreateRoomResponse is the body of POST /api/rooms. ModeratorToken is shown
- * only once; whoever holds it can moderate the room.
+ * CreateRoomRequest is the body of POST /api/rooms. Whoever knows the
+ * password can moderate the room.
  */
+export interface CreateRoomRequest {
+  moderatorPassword: string;
+}
 export interface CreateRoomResponse {
   code: string;
-  moderatorToken: string;
 }
+export const MinPasswordLen = 6;
+export const MaxPasswordLen = 64;
+/**
+ * Moderator passwords are measured in runes.
+ */
+export type M = typeof MinPasswordLen | typeof MaxPasswordLen;
 /**
  * MaxNameLen is measured in runes.
  */

@@ -152,8 +152,11 @@ func (j Join) Validate() error {
 	if len(j.Token) > maxTokenLen {
 		return errors.New("token too long")
 	}
-	if j.Role == RoleModerator && j.Token == "" {
-		return errors.New("moderators must send a token")
+	if j.Role == RoleModerator && j.Password == "" {
+		return errors.New("moderators must send the room password")
+	}
+	if utf8.RuneCountInString(j.Password) > MaxPasswordLen {
+		return errors.New("password too long")
 	}
 	if j.Role == RolePlayer && j.Token == "" && j.Name == "" {
 		return errors.New("new players must send a name")
@@ -256,3 +259,13 @@ func (m AssignTeam) Validate() error {
 }
 
 func (m ChooseTeam) Validate() error { return requireID("teamId", m.TeamID) }
+
+var ErrInvalidPassword = fmt.Errorf("moderator password must be %d-%d characters", MinPasswordLen, MaxPasswordLen)
+
+// ValidatePassword checks a new room's moderator password.
+func ValidatePassword(p string) error {
+	if n := utf8.RuneCountInString(p); !utf8.ValidString(p) || n < MinPasswordLen || n > MaxPasswordLen {
+		return ErrInvalidPassword
+	}
+	return nil
+}

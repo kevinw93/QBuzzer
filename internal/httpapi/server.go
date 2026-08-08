@@ -39,11 +39,19 @@ func (s *Server) handler(assets fs.FS) http.Handler {
 	return mux
 }
 
-// createRoom is unauthenticated: anyone may open a room and becomes its
-// moderator by holding the returned token.
-func (s *Server) createRoom(w http.ResponseWriter, _ *http.Request) {
-	rm, err := s.hub.Create()
+// createRoom is unauthenticated: anyone may open a room, and whoever knows
+// the password they chose can moderate it.
+func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
+	var req protocol.CreateRoomRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		http.Error(w, "body must be JSON with moderatorPassword", http.StatusBadRequest)
+		return
+	}
+	rm, err := s.hub.Create(req.ModeratorPassword)
 	switch {
+	case errors.Is(err, protocol.ErrInvalidPassword):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	case errors.Is(err, room.ErrTooManyRooms):
 		http.Error(w, "server is at its room limit; try again later", http.StatusServiceUnavailable)
 		return
@@ -52,8 +60,7 @@ func (s *Server) createRoom(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "could not create room", http.StatusServiceUnavailable)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store") // carries a credential
-	writeJSON(w, http.StatusCreated, protocol.CreateRoomResponse{Code: rm.Code(), ModeratorToken: rm.ModeratorToken()})
+	writeJSON(w, http.StatusCreated, protocol.CreateRoomResponse{Code: rm.Code()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

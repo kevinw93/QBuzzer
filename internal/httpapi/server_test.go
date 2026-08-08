@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -26,7 +28,15 @@ import (
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
-const timeout = 2 * time.Second
+const (
+	timeout      = 2 * time.Second
+	testPassword = "hunter22"
+)
+
+func postRoom(e *env, password string) (*http.Response, error) {
+	body, _ := json.Marshal(protocol.CreateRoomRequest{ModeratorPassword: password})
+	return http.Post(e.ts.URL+"/api/rooms", "application/json", bytes.NewReader(body))
+}
 
 type env struct {
 	ts     *httptest.Server
@@ -56,16 +66,13 @@ func newEnv(t *testing.T, mod func(*room.Config)) *env {
 
 func (e *env) createRoom(t *testing.T) protocol.CreateRoomResponse {
 	t.Helper()
-	resp, err := http.Post(e.ts.URL+"/api/rooms", "application/json", nil)
+	resp, err := postRoom(e, testPassword)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
-		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 	var body protocol.CreateRoomResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -197,14 +204,24 @@ func playersAre(want string) func(protocol.RoomState) bool {
 	return func(s protocol.RoomState) bool { return players(s) == want }
 }
 
-func TestCreateRoomReturnsCodeAndModeratorToken(t *testing.T) {
+func TestCreateRoom(t *testing.T) {
 	e := newEnv(t, nil)
 	r := e.createRoom(t)
-	if len(r.Code) != 6 || len(r.ModeratorToken) < 26 {
+	if len(r.Code) != 6 {
 		t.Errorf("response = %+v", r)
 	}
-	if rm, ok := e.hub.Get(r.Code); !ok || rm.ModeratorToken() != r.ModeratorToken {
-		t.Error("room not registered with the returned token")
+	if _, ok := e.hub.Get(r.Code); !ok {
+		t.Error("room not registered")
+	}
+	for _, body := range []string{"", "not json", `{"moderatorPassword":"short"}`, `{}`} {
+		resp, err := http.Post(e.ts.URL+"/api/rooms", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("body %q: status %d, want 400", body, resp.StatusCode)
+		}
 	}
 }
 
@@ -260,7 +277,7 @@ func TestModeratorJoinAndPermissions(t *testing.T) {
 	r := e.createRoom(t)
 	p, _ := e.join(t, r.Code, player("Alice", ""))
 	m, w := e.join(t, r.Code, protocol.Join{
-		ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Token: r.ModeratorToken,
+		ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Password: testPassword,
 	})
 	if w.Role != protocol.RoleModerator {
 		t.Errorf("welcome = %+v", w)
@@ -280,7 +297,7 @@ func TestModeratorJoinAndPermissions(t *testing.T) {
 func TestJoinHandshakeFailures(t *testing.T) {
 	e := newEnv(t, nil)
 	r := e.createRoom(t)
-	_, w := e.join(t, r.Code, player("Alice", ""))
+	e.join(t, r.Code, player("Alice", ""))
 
 	join := func(j protocol.Join) []byte {
 		b, err := protocol.EncodeClient(protocol.MsgJoin, 0, j)
@@ -302,7 +319,7 @@ func TestJoinHandshakeFailures(t *testing.T) {
 		{"old protocol version", websocket.MessageText, join(protocol.Join{ProtocolVersion: 0, Role: protocol.RolePlayer, Name: "A"}), protocol.CloseCodeReloadRequired},
 		{"stale join shape", websocket.MessageText, []byte(`{"type":"join","payload":{"protocolVersion":0,"name":["A"]}}`), protocol.CloseCodeReloadRequired},
 		{"invalid join", websocket.MessageText, join(protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: "admin", Name: "A"}), protocol.CloseCodeJoinRequired},
-		{"wrong moderator token", websocket.MessageText, join(protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Token: w.SessionToken}), protocol.CloseCodeUnauthorized},
+		{"wrong moderator password", websocket.MessageText, join(protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Password: "not-it"}), protocol.CloseCodeUnauthorized},
 		{"unknown session", websocket.MessageText, join(player("", "nope")), protocol.CloseCodeUnknownSession},
 	}
 	for _, tt := range tests {
@@ -426,7 +443,7 @@ func TestServesFrontendAndHealth(t *testing.T) {
 func TestCreateRoomAtLimit(t *testing.T) {
 	e := newEnv(t, func(c *room.Config) { c.MaxRooms = 1 })
 	for i, want := range []int{http.StatusCreated, http.StatusServiceUnavailable} {
-		resp, err := http.Post(e.ts.URL+"/api/rooms", "", nil)
+		resp, err := postRoom(e, testPassword)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -442,7 +459,7 @@ func TestTossupOverWebSockets(t *testing.T) {
 		c.NewGame = func() room.Game { return game.New(game.Practice()) }
 	})
 	r := e.createRoom(t)
-	mod, _ := e.join(t, r.Code, protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Token: r.ModeratorToken})
+	mod, _ := e.join(t, r.Code, protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Password: testPassword})
 	alice, w := e.join(t, r.Code, player("Alice", ""))
 
 	send(t, mod, protocol.MsgStartTossup, 1, protocol.StartTossup{TossupID: "t1"})
@@ -545,4 +562,22 @@ func TestClockSyncOverWebSockets(t *testing.T) {
 	}
 	conn.CloseNow()
 	<-done
+}
+
+func TestModeratorPasswordGuessingClosesWithRateLimit(t *testing.T) {
+	e := newEnv(t, nil)
+	code := e.createRoom(t).Code
+	mod := func(pw string) websocket.StatusCode {
+		conn := e.dial(t, code)
+		send(t, conn, protocol.MsgJoin, 0, protocol.Join{ProtocolVersion: protocol.ProtocolVersion, Role: protocol.RoleModerator, Password: pw})
+		return closeStatusOf(t, conn)
+	}
+	for i := range 5 {
+		if got := mod(fmt.Sprint("guess", i)); got != websocket.StatusCode(protocol.CloseCodeUnauthorized) {
+			t.Fatalf("guess %d: close %v", i, got)
+		}
+	}
+	if got := mod(testPassword); got != websocket.StatusCode(protocol.CloseCodeRateLimited) {
+		t.Errorf("right password during lockout: close %v, want rate limited", got)
+	}
 }
