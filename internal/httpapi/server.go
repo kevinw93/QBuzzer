@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
@@ -34,8 +36,9 @@ func (s *Server) handler(assets fs.FS) http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("POST /api/rooms", s.createRoom)
+	mux.HandleFunc("GET /api/rooms/{code}", s.getRoom)
 	mux.HandleFunc("GET /api/rooms/{code}/ws", s.joinRoom)
-	mux.Handle("GET /", http.FileServerFS(assets))
+	mux.Handle("GET /", spa(assets))
 	return mux
 }
 
@@ -67,4 +70,32 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v) // the status line is already sent
+}
+
+// getRoom lets a client tell "room gone" from "network down", which a failed
+// WebSocket handshake can't report to browser code.
+func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
+	rm, ok := s.hub.Get(r.PathValue("code"))
+	if !ok {
+		http.Error(w, "room not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.CreateRoomResponse{Code: rm.Code()})
+}
+
+// spa serves built assets, and index.html for extensionless paths that aren't
+// files, so client-side routes like /r/ABC234 load the app while a missing
+// asset is still a 404.
+func spa(assets fs.FS) http.Handler {
+	files := http.FileServerFS(assets)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if name != "" {
+			if _, err := fs.Stat(assets, name); err != nil && path.Ext(name) == "" {
+				http.ServeFileFS(w, r, assets, "index.html")
+				return
+			}
+		}
+		files.ServeHTTP(w, r)
+	})
 }

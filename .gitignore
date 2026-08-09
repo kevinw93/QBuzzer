@@ -8,3 +8,5 @@
 .vscode/*
 !.vscode/extensions.json
 .idea
+/web/test-results/
+/web/playwright-report/

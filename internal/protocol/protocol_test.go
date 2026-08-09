@@ -40,10 +40,12 @@ var samples = map[MsgType]any{
 			Teams:        []TeamView{{ID: "T1", Name: "Alpha", Score: 25, PlayerIDs: []string{"p1"}}, {ID: "T2", Name: "Beta", Score: 10, PlayerIDs: []string{"p2"}}},
 			Protests:     []ProtestView{{TossupID: "t2", PlayerID: "p2", Note: "pronunciation"}},
 			LastActionID: "a41",
+			History:      []TossupRecord{{TossupID: "t2", Number: 2, Buzzes: []BuzzView{{ID: "b5", PlayerID: "p2", TeamID: "T2", Status: BuzzStatusIncorrect, Points: -5}}}},
+			Rules:        RulesView{TossupPoints: 10, PowerPoints: 15, NegPoints: -5, BonusParts: 3, BonusPartPoints: 10},
 		},
 	},
 	MsgError:        ErrorMessage{Code: ErrCodeStale, Message: "buzz b6 is no longer pending", Seq: 12},
-	MsgPing:         Ping{ID: 9},
+	MsgPing:         Ping{ID: 9, RTTMs: 21.5, BoundMs: 10.75},
 	MsgBuzzLocked:   BuzzLocked{Version: 6, TossupID: "t3", BuzzID: "b7", PlayerID: "p2"},
 	MsgRuled:        Ruled{Version: 7, BuzzID: "b7", PlayerID: "p2", Result: RulingPower, Points: 15},
 	MsgScoreChanged: ScoreChanged{Version: 7, TeamID: "T2", Delta: -5},
@@ -139,10 +141,10 @@ func TestWireFormat(t *testing.T) {
 			func() ([]byte, error) {
 				return Encode(MsgState, RoomState{Epoch: "e", Version: 1, Code: "ABC234", Players: []PlayerView{}, Game: GameView{
 					Phase: PhaseIdle, TossupID: "t1", TossupNumber: 1,
-					Buzzes: []BuzzView{}, LockedOut: []string{}, Teams: []TeamView{}, Protests: []ProtestView{},
+					Buzzes: []BuzzView{}, LockedOut: []string{}, Teams: []TeamView{}, Protests: []ProtestView{}, History: []TossupRecord{},
 				}})
 			},
-			`{"type":"state","payload":{"epoch":"e","version":1,"code":"ABC234","moderatorConnected":false,"players":[],"game":{"phase":"idle","tossupId":"t1","tossupNumber":1,"buzzes":[],"lockedOut":[],"teams":[],"protests":[],"individual":false}}}`,
+			`{"type":"state","payload":{"epoch":"e","version":1,"code":"ABC234","moderatorConnected":false,"players":[],"game":{"phase":"idle","tossupId":"t1","tossupNumber":1,"buzzes":[],"lockedOut":[],"teams":[],"protests":[],"history":[],"rules":{"individual":false,"tossupPoints":0,"powerPoints":0,"negPoints":0,"bonusParts":0,"bonusPartPoints":0,"bounceback":false}}}}`,
 		},
 		{
 			"error",

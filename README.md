@@ -9,12 +9,26 @@ golangci-lint v2 for `make lint`.
 ```sh
 make dev    # Go server + Vite dev server at http://localhost:5173
 make test   # go test -race ./...
+cd web && npm test && npm run e2e   # Vitest; Playwright smoke test against the real binary
 make lint   # golangci-lint + eslint
 make gen    # regenerate web/src/protocol.ts from internal/protocol
 make build  # frontend build, then a single binary at bin/qbuzzer
 ```
 
 The server listens on `127.0.0.1:8080`; set `QBUZZER_ADDR` to override.
+
+## Using it
+
+1. **Moderator:** open the site, choose a moderator password, and create a room.
+   Read the room code to players over voice chat. To hand the room to another
+   moderator, tell them the password; they open `/r/CODE/mod` and take over.
+2. **Players:** enter the room code and a name, pick a team, and buzz with the
+   big button or the spacebar.
+3. **Rulings** are one key each: `P` power, `C` 10, `N` neg, `Z` 0. `Space`
+   starts the next tossup or moves on, `D` kills a tossup nobody got, `1`–`9`
+   rule bonus parts (`Shift` for a miss), `U` undoes. The console lists buzzes
+   in judged order with their network correction.
+4. **Scoresheet:** "Export scoresheet" downloads a CSV (draft format).
 
 ## Layout
 

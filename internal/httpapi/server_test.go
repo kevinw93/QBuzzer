@@ -427,7 +427,7 @@ func TestShutdownSendsGoingAway(t *testing.T) {
 
 func TestServesFrontendAndHealth(t *testing.T) {
 	e := newEnv(t, nil)
-	for path, want := range map[string]string{"/": "<h1>QBuzzer</h1>", "/healthz": "ok"} {
+	for path, want := range map[string]string{"/": "<h1>QBuzzer</h1>", "/healthz": "ok", "/r/ABC234": "<h1>QBuzzer</h1>", "/r/ABC234/mod": "<h1>QBuzzer</h1>"} {
 		resp, err := http.Get(e.ts.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -521,6 +521,7 @@ func TestClockSyncOverWebSockets(t *testing.T) {
 	const ahead = 5000.0
 	clientNow := func() float64 { return e.clk.Now() + ahead }
 	var pongs atomic.Int32
+	var sawRTT atomic.Bool
 	done := make(chan struct{})
 	go func() { // answers pings like the browser will
 		defer close(done)
@@ -535,6 +536,9 @@ func TestClockSyncOverWebSockets(t *testing.T) {
 			}
 			var p protocol.Ping
 			_ = json.Unmarshal(env.Payload, &p)
+			if p.RTTMs > 0 {
+				sawRTT.Store(true)
+			}
 			recv := clientNow()
 			b, _ := protocol.EncodeClient(protocol.MsgPong, 0, protocol.Pong{PingID: p.ID, ClientRecvMs: recv, ClientSendMs: clientNow()})
 			if conn.Write(context.Background(), websocket.MessageText, b) == nil {
@@ -560,6 +564,9 @@ func TestClockSyncOverWebSockets(t *testing.T) {
 	if err := math.Abs(est.Offset - ahead); err > est.Bound || est.Bound > 10 {
 		t.Errorf("estimate %+v: error %.3f ms", est, err)
 	}
+	if !sawRTT.Load() {
+		t.Error("pings never reported the RTT estimate")
+	}
 	conn.CloseNow()
 	<-done
 }
@@ -579,5 +586,24 @@ func TestModeratorPasswordGuessingClosesWithRateLimit(t *testing.T) {
 	}
 	if got := mod(testPassword); got != websocket.StatusCode(protocol.CloseCodeRateLimited) {
 		t.Errorf("right password during lockout: close %v, want rate limited", got)
+	}
+}
+
+func TestMissingAssetIs404AndRoomLookup(t *testing.T) {
+	e := newEnv(t, nil)
+	code := e.createRoom(t).Code
+	for path, want := range map[string]int{
+		"/assets/missing.js": http.StatusNotFound,
+		"/api/rooms/" + code: http.StatusOK,
+		"/api/rooms/ZZZZZZ":  http.StatusNotFound,
+	} {
+		resp, err := http.Get(e.ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("GET %s = %d, want %d", path, resp.StatusCode, want)
+		}
 	}
 }

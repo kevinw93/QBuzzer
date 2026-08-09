@@ -1,8 +1,243 @@
 :root {
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   color-scheme: light dark;
+  --accent: #2563eb;
+  --danger: #dc2626;
+  --muted: #6b7280;
+  --surface: color-mix(in srgb, canvas 92%, canvastext 8%);
 }
 
 body {
+  margin: 0;
+}
+
+main {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+main.center {
+  min-height: 80vh;
+  place-content: center;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--muted);
+}
+
+button {
+  cursor: pointer;
+  background: var(--surface);
+}
+
+button.primary,
+button[type='submit'] {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.home {
+  max-width: 28rem;
+}
+
+.buzz {
+  width: 100%;
+  min-height: 45vh;
+  font-size: clamp(2rem, 8vw, 4rem);
+  font-weight: 700;
+  background: var(--danger);
+  color: white;
+  border: none;
+  border-radius: 1rem;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.buzz:disabled {
+  background: var(--muted);
+  opacity: 1;
+}
+
+.banner {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  background: var(--surface);
+}
+
+.banner.warn {
+  background: #fef3c7;
+  color: #78350f;
+}
+
+.banner.error,
+.toast {
+  background: #fee2e2;
+  color: #7f1d1d;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+}
+
+.hint {
+  color: var(--muted);
+  margin: 0;
+}
+
+.tag {
+  margin-left: 0.5rem;
+  padding: 0 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  background: var(--surface);
+}
+
+.tag.warn {
+  background: #fef3c7;
+  color: #78350f;
+}
+
+.away {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--surface);
+}
+
+.scores .score {
+  text-align: right;
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.scores .members span + span::before {
+  content: ', ';
+}
+
+.scores tr.mine {
+  background: var(--surface);
+}
+
+.latency {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.875rem;
+}
+
+.latency.good {
+  color: #15803d;
+}
+
+.latency.ok {
+  color: #a16207;
+}
+
+.latency.poor {
+  color: var(--danger);
+}
+
+.teams-pick,
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.teams-pick .selected {
+  outline: 3px solid var(--accent);
+}
+
+.controls.ruling button {
+  font-size: 1.25rem;
+  min-width: 6rem;
+}
+
+.holder {
+  width: 100%;
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.bonus {
+  width: 100%;
+  margin: 0;
+  display: grid;
+  gap: 0.375rem;
+}
+
+.buzzes tr.lost {
+  color: var(--muted);
+}
+
+.buzzes tr.awaiting {
+  font-weight: 600;
+}
+
+.team-admin ul {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.375rem;
+}
+
+.team-admin li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.25rem 1rem;
+}
+
+.keys div {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.keys dt {
+  font-weight: 600;
+  min-width: 6rem;
+}
+
+.keys dd {
   margin: 0;
 }

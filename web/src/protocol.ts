@@ -183,10 +183,14 @@ export interface ErrorMessage {
   seq?: number /* uint64 */;
 }
 /**
- * Ping starts a clock-sync exchange; the client answers with Pong.
+ * Ping starts a clock-sync exchange; the client answers with Pong. RTTMs and
+ * BoundMs report the server's current estimate for this connection (0 until
+ * the first exchange completes), for display only.
  */
 export interface Ping {
   id: number /* uint64 */;
+  rttMs?: number /* float64 */;
+  boundMs?: number /* float64 */;
 }
 /**
  * BuzzLocked, Ruled, and ScoreChanged trigger UI effects (sounds, flashes).
@@ -222,12 +226,12 @@ export interface CreateRoomRequest {
 export interface CreateRoomResponse {
   code: string;
 }
+/**
+ * Moderator password limits, in runes. Separate declarations keep tygo from
+ * treating them as an enum.
+ */
 export const MinPasswordLen = 6;
 export const MaxPasswordLen = 64;
-/**
- * Moderator passwords are measured in runes.
- */
-export type M = typeof MinPasswordLen | typeof MaxPasswordLen;
 /**
  * MaxNameLen is measured in runes.
  */
@@ -265,7 +269,7 @@ export const PhaseReading = "reading"; // buzzing open
 export const PhaseBuzzWindow = "buzz_window"; // collecting near-simultaneous buzzes
 export const PhaseAwaitingRuling = "awaiting_ruling"; // one buzz holds the floor
 export const PhaseBonus = "bonus";
-export const PhaseTossupDead = "tossup_dead"; // every team locked out, or time expired
+export const PhaseTossupDead = "tossup_dead"; // every team locked out
 export type Phase = typeof PhaseIdle | typeof PhaseReading | typeof PhaseBuzzWindow | typeof PhaseAwaitingRuling | typeof PhaseBonus | typeof PhaseTossupDead;
 export const BuzzStatusPending = "pending"; // inside the collection window
 export const BuzzStatusLost = "lost"; // another buzz in the window was earlier
@@ -328,5 +332,27 @@ export interface GameView {
   teams: TeamView[];
   protests: ProtestView[];
   lastActionId?: string; // target for Undo
+  history: TossupRecord[]; // finished tossups, oldest first
+  rules: RulesView;
+}
+/**
+ * TossupRecord is a finished tossup, for scoresheets.
+ */
+export interface TossupRecord {
+  tossupId: string;
+  number: number /* int */;
+  buzzes: BuzzView[]; // earliest first; none were correct if the tossup went dead
+  bonus?: BonusView;
+}
+/**
+ * RulesView is what the UI needs from the ruleset.
+ */
+export interface RulesView {
   individual: boolean;
+  tossupPoints: number /* int */;
+  powerPoints: number /* int */; // 0: no powers
+  negPoints: number /* int */; // 0: no negs
+  bonusParts: number /* int */;
+  bonusPartPoints: number /* int */;
+  bounceback: boolean;
 }

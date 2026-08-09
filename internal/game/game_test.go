@@ -579,3 +579,33 @@ func TestCloneIsDeep(t *testing.T) {
 		t.Errorf("clone shares memory with the original: %+v", v)
 	}
 }
+
+func TestHistoryRecordsFinishedTossups(t *testing.T) {
+	h := teams(t, Standard())
+	h.ok("mod", 0, protocol.StartTossup{TossupID: "t1"})
+	h.buzzAndLock("p1", ms(1000))
+	h.ok("mod", ms(2000), protocol.Rule{BuzzID: h.awaitingBuzz(), Result: protocol.RulingPower})
+	h.ok("mod", ms(2500), protocol.RuleBonus{BonusID: h.bonusID(), Part: 0, Correct: true})
+	h.ok("mod", ms(3000), protocol.Next{TossupID: "t1"})
+	h.ok("mod", ms(3000), protocol.StartTossup{TossupID: "t2"})
+	h.ok("mod", ms(4000), protocol.Next{TossupID: "t2"}) // dead: nobody buzzed
+
+	hist := h.view().History
+	if len(hist) != 2 {
+		t.Fatalf("history = %+v", hist)
+	}
+	if r := hist[0]; r.TossupID != "t1" || len(r.Buzzes) != 1 || r.Buzzes[0].Points != 15 || r.Bonus == nil || !r.Bonus.Parts[0].Correct {
+		t.Errorf("t1 record = %+v", r)
+	}
+	if r := hist[1]; r.TossupID != "t2" || len(r.Buzzes) != 0 || r.Bonus != nil {
+		t.Errorf("t2 record = %+v", r)
+	}
+
+	h.ok("mod", ms(5000), protocol.Undo{ActionID: h.lastAction()}) // un-next t2
+	if n := len(h.view().History); n != 1 {
+		t.Errorf("history after undoing next = %d records, want 1", n)
+	}
+	if r := h.view().Rules; r.PowerPoints != 15 || r.BonusParts != 3 || r.Individual {
+		t.Errorf("rules view = %+v", r)
+	}
+}

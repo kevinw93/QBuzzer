@@ -45,6 +45,7 @@ type state struct {
 	teams      []team
 	scores     map[string]int // by team ID (player ID in individual play)
 	protests   []protocol.ProtestView
+	history    []protocol.TossupRecord // append-only; records are never modified
 
 	nextBuzz, nextTeam int
 	lastAction         int // event ID of the latest undoable action; 0 if none
@@ -74,6 +75,7 @@ func (s state) clone() state {
 	c.teams = slices.Clone(s.teams)
 	c.scores = maps.Clone(s.scores)
 	c.protests = slices.Clone(s.protests)
+	c.history = slices.Clone(s.history)
 	return c
 }
 
@@ -138,8 +140,16 @@ func (s *state) awaiting() *buzz {
 	return nil
 }
 
-// endTossup moves to Idle with the next tossup ready.
+// endTossup records the tossup, if it was read, and moves to Idle with the
+// next tossup ready.
 func (s *state) endTossup() {
+	if !s.startedAt.IsZero() {
+		rec := protocol.TossupRecord{TossupID: s.tossupID(), Number: s.tossupNum, Buzzes: s.buzzViews()}
+		if s.bonus != nil {
+			rec.Bonus = s.bonusView()
+		}
+		s.history = append(s.history, rec)
+	}
 	s.phase = protocol.PhaseIdle
 	s.tossupNum++
 	s.startedAt, s.windowEnds = time.Time{}, time.Time{}
@@ -153,11 +163,15 @@ func (s *state) view(r Ruleset) protocol.GameView {
 		Phase:        s.phase,
 		TossupID:     s.tossupID(),
 		TossupNumber: s.tossupNum,
-		Buzzes:       make([]protocol.BuzzView, 0, len(s.buzzes)),
 		LockedOut:    slices.Sorted(maps.Keys(s.locked)),
 		Teams:        []protocol.TeamView{},
 		Protests:     slices.Clone(s.protests),
-		Individual:   r.Individual,
+		Buzzes:       s.buzzViews(),
+		History:      slices.Clone(s.history),
+		Rules: protocol.RulesView{
+			Individual: r.Individual, TossupPoints: r.TossupPoints, PowerPoints: r.PowerPoints, NegPoints: r.NegPoints,
+			BonusParts: r.BonusParts, BonusPartPoints: r.BonusPartPoints, Bounceback: r.Bounceback,
+		},
 	}
 	if v.LockedOut == nil {
 		v.LockedOut = []string{}
@@ -165,15 +179,11 @@ func (s *state) view(r Ruleset) protocol.GameView {
 	if v.Protests == nil {
 		v.Protests = []protocol.ProtestView{}
 	}
-	for _, b := range s.buzzes {
-		v.Buzzes = append(v.Buzzes, protocol.BuzzView{
-			ID: b.id, PlayerID: b.player, TeamID: b.team,
-			OffsetMs: msBetween(s.startedAt, b.at), CorrectionMs: b.correction, Clamped: b.clamped,
-			Status: b.status, Power: b.power, Points: b.points,
-		})
+	if v.History == nil {
+		v.History = []protocol.TossupRecord{}
 	}
 	if s.bonus != nil {
-		v.Bonus = &protocol.BonusView{ID: s.bonus.id, TeamID: s.bonus.team, Parts: slices.Clone(s.bonus.parts)}
+		v.Bonus = s.bonusView()
 	}
 	if r.Individual {
 		for _, p := range s.players {
@@ -201,3 +211,19 @@ func actionID(eventID int) string { return "a" + strconv.Itoa(eventID) }
 func msBetween(from, to time.Time) float64 { return float64(to.Sub(from).Microseconds()) / 1000 }
 
 func durMs(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+
+func (s *state) buzzViews() []protocol.BuzzView {
+	views := make([]protocol.BuzzView, 0, len(s.buzzes))
+	for _, b := range s.buzzes {
+		views = append(views, protocol.BuzzView{
+			ID: b.id, PlayerID: b.player, TeamID: b.team,
+			OffsetMs: msBetween(s.startedAt, b.at), CorrectionMs: b.correction, Clamped: b.clamped,
+			Status: b.status, Power: b.power, Points: b.points,
+		})
+	}
+	return views
+}
+
+func (s *state) bonusView() *protocol.BonusView {
+	return &protocol.BonusView{ID: s.bonus.id, TeamID: s.bonus.team, Parts: slices.Clone(s.bonus.parts)}
+}

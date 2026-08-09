@@ -185,8 +185,13 @@ func (s *Server) pinger(ctx context.Context, conn *websocket.Conn, cs *clock.Ses
 			return
 		case <-t.C:
 		}
-		if id, ok := cs.Ping(s.clk.Now()); ok {
-			msg, err := protocol.Encode(protocol.MsgPing, protocol.Ping{ID: id})
+		now := s.clk.Now()
+		if id, ok := cs.Ping(now); ok {
+			p := protocol.Ping{ID: id}
+			if est, ok := cs.Estimate(now); ok {
+				p.RTTMs, p.BoundMs = est.RTT, est.Bound
+			}
+			msg, err := protocol.Encode(protocol.MsgPing, p)
 			if err != nil {
 				panic(err)
 			}

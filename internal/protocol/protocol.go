@@ -190,9 +190,13 @@ type ErrorMessage struct {
 	Seq     uint64  `json:"seq,omitempty"`
 }
 
-// Ping starts a clock-sync exchange; the client answers with Pong.
+// Ping starts a clock-sync exchange; the client answers with Pong. RTTMs and
+// BoundMs report the server's current estimate for this connection (0 until
+// the first exchange completes), for display only.
 type Ping struct {
-	ID uint64 `json:"id"`
+	ID      uint64  `json:"id"`
+	RTTMs   float64 `json:"rttMs,omitempty"`
+	BoundMs float64 `json:"boundMs,omitempty"`
 }
 
 // BuzzLocked, Ruled, and ScoreChanged trigger UI effects (sounds, flashes).
@@ -232,11 +236,11 @@ type CreateRoomResponse struct {
 	Code string `json:"code"`
 }
 
-// Moderator passwords are measured in runes.
-const (
-	MinPasswordLen = 6
-	MaxPasswordLen = 64
-)
+// Moderator password limits, in runes. Separate declarations keep tygo from
+// treating them as an enum.
+const MinPasswordLen = 6
+
+const MaxPasswordLen = 64
 
 // MaxNameLen is measured in runes.
 const MaxNameLen = 32
@@ -280,7 +284,7 @@ const (
 	PhaseBuzzWindow     Phase = "buzz_window"     // collecting near-simultaneous buzzes
 	PhaseAwaitingRuling Phase = "awaiting_ruling" // one buzz holds the floor
 	PhaseBonus          Phase = "bonus"
-	PhaseTossupDead     Phase = "tossup_dead" // every team locked out, or time expired
+	PhaseTossupDead     Phase = "tossup_dead" // every team locked out
 )
 
 type BuzzStatus string
@@ -338,14 +342,34 @@ type ProtestView struct {
 
 // GameView is the game portion of RoomState.
 type GameView struct {
-	Phase        Phase         `json:"phase"`
-	TossupID     string        `json:"tossupId"`
-	TossupNumber int           `json:"tossupNumber"`
-	Buzzes       []BuzzView    `json:"buzzes"`    // current tossup, earliest first
-	LockedOut    []string      `json:"lockedOut"` // team IDs, or player IDs under player lockout
-	Bonus        *BonusView    `json:"bonus,omitempty"`
-	Teams        []TeamView    `json:"teams"`
-	Protests     []ProtestView `json:"protests"`
-	LastActionID string        `json:"lastActionId,omitempty"` // target for Undo
-	Individual   bool          `json:"individual"`
+	Phase        Phase          `json:"phase"`
+	TossupID     string         `json:"tossupId"`
+	TossupNumber int            `json:"tossupNumber"`
+	Buzzes       []BuzzView     `json:"buzzes"`    // current tossup, earliest first
+	LockedOut    []string       `json:"lockedOut"` // team IDs, or player IDs under player lockout
+	Bonus        *BonusView     `json:"bonus,omitempty"`
+	Teams        []TeamView     `json:"teams"`
+	Protests     []ProtestView  `json:"protests"`
+	LastActionID string         `json:"lastActionId,omitempty"` // target for Undo
+	History      []TossupRecord `json:"history"`                // finished tossups, oldest first
+	Rules        RulesView      `json:"rules"`
+}
+
+// TossupRecord is a finished tossup, for scoresheets.
+type TossupRecord struct {
+	TossupID string     `json:"tossupId"`
+	Number   int        `json:"number"`
+	Buzzes   []BuzzView `json:"buzzes"` // earliest first; none were correct if the tossup went dead
+	Bonus    *BonusView `json:"bonus,omitempty"`
+}
+
+// RulesView is what the UI needs from the ruleset.
+type RulesView struct {
+	Individual      bool `json:"individual"`
+	TossupPoints    int  `json:"tossupPoints"`
+	PowerPoints     int  `json:"powerPoints"` // 0: no powers
+	NegPoints       int  `json:"negPoints"`   // 0: no negs
+	BonusParts      int  `json:"bonusParts"`
+	BonusPartPoints int  `json:"bonusPartPoints"`
+	Bounceback      bool `json:"bounceback"`
 }
