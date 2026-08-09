@@ -18,22 +18,22 @@ const (
 
 // Ruleset configures scoring and timing. Validate before use.
 type Ruleset struct {
-	Individual      bool // every player is their own team
-	TossupPoints    int
-	PowerPoints     int // 0 disables powers
-	NegPoints       int // 0 disables negs
-	Lockout         Lockout
-	BonusParts      int // 0 disables bonuses
-	BonusPartPoints int
-	Bounceback      bool // missed bonus parts may be awarded to another team
+	Individual      bool    `json:"individual"` // every player is their own team
+	TossupPoints    int     `json:"tossupPoints"`
+	PowerPoints     int     `json:"powerPoints"` // 0 disables powers
+	NegPoints       int     `json:"negPoints"`   // 0 disables negs
+	Lockout         Lockout `json:"lockout"`
+	BonusParts      int     `json:"bonusParts"` // 0 disables bonuses
+	BonusPartPoints int     `json:"bonusPartPoints"`
+	Bounceback      bool    `json:"bounceback"` // missed bonus parts may be awarded to another team
 
 	// MaxBuzzWindow caps the collection window, which otherwise covers the
 	// largest possible correction among eligible players. 0 locks the first
 	// buzz immediately.
-	MaxBuzzWindow time.Duration
+	MaxBuzzWindow time.Duration `json:"maxBuzzWindow"`
 	// CorrectionMargin is added to a connection's RTT to cap how much
 	// earlier than its arrival a message may be judged.
-	CorrectionMargin time.Duration
+	CorrectionMargin time.Duration `json:"correctionMargin"`
 }
 
 func defaultTiming(r Ruleset) Ruleset {

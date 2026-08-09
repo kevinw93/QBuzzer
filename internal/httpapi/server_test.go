@@ -24,6 +24,7 @@ import (
 	"github.com/kevinw93/QBuzzer/internal/game"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
+	"github.com/kevinw93/QBuzzer/internal/secret"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
@@ -50,6 +51,7 @@ func newEnv(t *testing.T, mod func(*room.Config)) *env {
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.DiscardHandler)
 	cfg := room.DefaultConfig()
+	cfg.PasswordParams = secret.Fast
 	if mod != nil {
 		mod(&cfg)
 	}
@@ -607,3 +609,6 @@ func TestMissingAssetIs404AndRoomLookup(t *testing.T) {
 		}
 	}
 }
+
+func (g *captureGame) Drain() []room.GameEvent    { return nil }
+func (g *captureGame) RulesJSON() json.RawMessage { return json.RawMessage("{}") }

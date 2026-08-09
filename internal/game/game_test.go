@@ -19,8 +19,9 @@ func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 // harness drives a Game with explicit times and checks, after every call,
 // that replaying the log reproduces the live state exactly.
 type harness struct {
-	t *testing.T
-	g *Game
+	t       *testing.T
+	g       *Game
+	entries []room.GameEvent // everything drained so far, as storage would hold it
 }
 
 // testRTT gives every test player a 100 ms correction cap (RTT + 10 ms
@@ -125,6 +126,14 @@ func (h *harness) checkReplay() {
 	replayed := replay(h.g.rules, h.g.log)
 	if got := replayed.view(h.g.rules); !reflect.DeepEqual(got, live) {
 		h.t.Fatalf("replay diverged:\nlive     %+v\nreplayed %+v", live, got)
+	}
+	h.entries = append(h.entries, h.g.Drain()...)
+	restored, err := Restore(h.g.RulesJSON(), h.entries)
+	if err != nil {
+		h.t.Fatalf("restore: %v", err)
+	}
+	if got := restored.View(); !reflect.DeepEqual(got, live) {
+		h.t.Fatalf("restore diverged:\nlive     %+v\nrestored %+v", live, got)
 	}
 }
 

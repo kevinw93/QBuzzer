@@ -22,6 +22,7 @@ type event struct {
 	correction float64 // ms; at = arrived - correction
 	clamped    bool
 	window     time.Duration // collection window, if this buzz opens one
+	rtt        float64       // ms; the buzzer's RTT estimate, 0 if none
 }
 
 // Internal events, logged when they change state so replay is deterministic.
@@ -195,7 +196,7 @@ func (s *state) buzz(r Ruleset, e event, m protocol.Buzz) ([]protocol.Effect, er
 	if t == "" {
 		return nil, notAllowed("join a team to buzz")
 	}
-	b := buzz{player: e.player, team: t, at: e.at, arrived: e.arrived, correction: e.correction, clamped: e.clamped, status: protocol.BuzzStatusPending}
+	b := buzz{player: e.player, team: t, at: e.at, arrived: e.arrived, correction: e.correction, clamped: e.clamped, rtt: e.rtt, status: protocol.BuzzStatusPending}
 	if s.locked[lockKey(r, b)] {
 		return nil, notAllowed("locked out")
 	}

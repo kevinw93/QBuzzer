@@ -68,3 +68,22 @@ because their audio arrived later. Measuring that needs the moderator's audio
 to go through QBuzzer (WebRTC playout timestamps), a planned stretch goal.
 Powers and negs are the moderator's call (Power / 10 / Neg / 0 buttons): without
 the audio, QBuzzer can't know which word a player heard.
+
+## Persistence
+
+Set `DATABASE_URL` to a PostgreSQL connection string to keep games across
+restarts; without it, games live in memory. On startup the server migrates the
+schema (goose), restores every unfinished game active in the last two hours,
+and players reconnect to their seats automatically.
+
+Rooms never wait on the database: they hand writes to a bounded in-memory
+queue that a single writer flushes every 100 ms. If the database falls behind
+long enough to fill the queue, the game keeps running and the moderator sees
+that it is no longer being saved.
+
+Moderator passwords are stored as argon2id hashes and session tokens as
+SHA-256 hashes; neither is stored in plain text.
+
+```sh
+make test-db   # all Go tests, including Postgres ones, against a throwaway database
+```

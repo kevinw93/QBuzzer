@@ -16,6 +16,7 @@ import (
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
+	"github.com/kevinw93/QBuzzer/internal/secret"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
@@ -31,6 +32,7 @@ const (
 func newTestHub(t *testing.T, mod func(*Config)) (*Hub, context.CancelFunc) {
 	t.Helper()
 	cfg := DefaultConfig()
+	cfg.PasswordParams = secret.Fast
 	if mod != nil {
 		mod(&cfg)
 	}
@@ -203,7 +205,9 @@ func (g *recordingGame) PlayerClock(id string, est clock.Estimate, _ time.Time) 
 	defer g.mu.Unlock()
 	g.clocks = append(g.clocks, id)
 }
-func (g *recordingGame) View() protocol.GameView { return protocol.GameView{} }
+func (g *recordingGame) View() protocol.GameView    { return protocol.GameView{} }
+func (g *recordingGame) Drain() []GameEvent         { return nil }
+func (g *recordingGame) RulesJSON() json.RawMessage { return json.RawMessage("{}") }
 
 func (g *recordingGame) commands() []Command {
 	g.mu.Lock()

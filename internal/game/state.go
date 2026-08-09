@@ -14,6 +14,7 @@ type buzz struct {
 	at               time.Time // judged press time
 	arrived          time.Time
 	correction       float64 // ms
+	rtt              float64 // ms
 	clamped          bool
 	status           protocol.BuzzStatus
 	power            bool // ruled a power
@@ -218,7 +219,7 @@ func (s *state) buzzViews() []protocol.BuzzView {
 		views = append(views, protocol.BuzzView{
 			ID: b.id, PlayerID: b.player, TeamID: b.team,
 			OffsetMs: msBetween(s.startedAt, b.at), CorrectionMs: b.correction, Clamped: b.clamped,
-			Status: b.status, Power: b.power, Points: b.points,
+			Status: b.status, Power: b.power, Points: b.points, RTTMs: b.rtt,
 		})
 	}
 	return views

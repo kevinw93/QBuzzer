@@ -1,17 +1,19 @@
 package room
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
+	"github.com/kevinw93/QBuzzer/internal/secret"
 )
 
 var (
@@ -35,9 +37,10 @@ type Incoming struct {
 
 type (
 	joinEvent struct {
-		c     *Client
-		join  protocol.Join
-		reply chan error // buffered so the room never blocks replying
+		c          *Client
+		join       protocol.Join
+		passwordOK bool       // verified by Join on the caller's goroutine
+		reply      chan error // buffered so the room never blocks replying
 	}
 	leaveEvent struct {
 		c *Client
@@ -56,27 +59,30 @@ type (
 // seat is a session: it outlives connections so a player can reconnect with
 // the same identity and seq history.
 type seat struct {
-	id      string
-	role    protocol.Role
-	name    string
-	token   string
-	lastSeq uint64  // highest seq processed; lower or equal seqs are duplicates
-	client  *Client // nil while disconnected
+	id        string
+	role      protocol.Role
+	name      string
+	tokenHash string  // SHA-256 of the session token; the token itself is never kept
+	lastSeq   uint64  // highest seq processed; lower or equal seqs are duplicates
+	client    *Client // nil while disconnected
 }
 
-// Room is one live game. All fields below done are owned by the run
+// Room is one live game. All fields below lockedUntil are owned by the run
 // goroutine; other goroutines interact only by sending events to inbox, which
 // gives every event in the room a single total order. Messages from one
 // connection are handled in the order they were read; across connections,
 // inbox order need not match ReceivedAt order.
 type Room struct {
-	code          string
-	epoch         string
-	moderatorPass [sha256.Size]byte // SHA-256 of the password, so comparison is constant-time and length-independent
-	cfg           Config
-	inbox         chan any
-	done          chan struct{} // closed when run returns
+	code         string
+	gameID       string
+	passwordHash string // argon2id; immutable, so Join verifies off the room goroutine
+	cfg          Config
+	inbox        chan any
+	done         chan struct{} // closed when run returns
+	lockedUntil  atomic.Int64  // unix nanos; moderator joins refused before this
 
+	epoch     string
+	restored  bool
 	game      Game
 	wake      *time.Timer // fires at the game's latest WakeAt; created stopped in run
 	players   []*seat     // join order
@@ -86,26 +92,51 @@ type Room struct {
 	nextID    int
 	version   uint64
 
-	modFailures    []time.Time // wrong passwords in the last moderatorLockout
-	modLockedUntil time.Time
+	modFailures []time.Time // wrong passwords in the last moderatorLockout
+
+	dirty    map[*seat]bool // seats changed since the last persist
+	lastProj []byte         // last persisted projection
+	unsaved  bool           // the sink refused an op; persistence stopped
 }
 
-func newRoom(code, moderatorPassword string, cfg Config) *Room {
+func newRoom(code, passwordHash string, cfg Config) *Room {
 	var g Game = unimplementedGame{}
 	if cfg.NewGame != nil {
 		g = cfg.NewGame()
 	}
 	return &Room{
-		code:          code,
-		epoch:         rand.Text()[:8],
-		moderatorPass: sha256.Sum256([]byte(moderatorPassword)),
-		cfg:           cfg,
-		inbox:         make(chan any, 64),
-		done:          make(chan struct{}),
-		game:          g,
-		byToken:       make(map[string]*seat),
-		byClient:      make(map[*Client]*seat),
+		code:         code,
+		gameID:       rand.Text(),
+		passwordHash: passwordHash,
+		cfg:          cfg,
+		inbox:        make(chan any, 64),
+		done:         make(chan struct{}),
+		epoch:        rand.Text()[:8],
+		game:         g,
+		byToken:      make(map[string]*seat),
+		byClient:     make(map[*Client]*seat),
+		dirty:        make(map[*seat]bool),
 	}
+}
+
+func restoredRoom(rs Restored, cfg Config) *Room {
+	r := newRoom(rs.Code, rs.PasswordHash, cfg)
+	r.gameID, r.game, r.restored = rs.GameID, rs.Game, true
+	for _, sr := range rs.Seats {
+		s := &seat{id: sr.PlayerID, role: sr.Role, name: sr.Name, tokenHash: sr.TokenHash, lastSeq: sr.LastSeq}
+		if s.role == protocol.RoleModerator {
+			r.moderator = s
+			continue
+		}
+		r.players = append(r.players, s)
+		if s.tokenHash != "" {
+			r.byToken[s.tokenHash] = s
+		}
+		if n, err := strconv.Atoi(s.id[1:]); err == nil {
+			r.nextID = max(r.nextID, n)
+		}
+	}
+	return r
 }
 
 func (r *Room) Code() string { return r.code }
@@ -118,13 +149,26 @@ func (r *Room) NewClient() *Client { return newClient(r.cfg.SendBuffer) }
 // Join attaches c to a new or existing seat. On success a Welcome followed
 // by a RoomState is already pending on c. If the seat was connected
 // elsewhere, that connection is closed with ReasonReplaced.
+//
+// A moderator's password is verified here, on the caller's goroutine: argon2id
+// costs tens of milliseconds, which the room loop must never spend.
 func (r *Room) Join(c *Client, j protocol.Join) error {
-	reply := make(chan error, 1)
-	if err := r.submit(joinEvent{c: c, join: j, reply: reply}); err != nil {
+	ev := joinEvent{c: c, join: j, reply: make(chan error, 1)}
+	if j.Role == protocol.RoleModerator {
+		if time.Now().UnixNano() < r.lockedUntil.Load() {
+			return ErrRateLimited // checked first so guessing can't burn CPU
+		}
+		ok, err := secret.VerifyPassword(j.Password, r.passwordHash)
+		if err != nil {
+			return err
+		}
+		ev.passwordOK = ok
+	}
+	if err := r.submit(ev); err != nil {
 		return err
 	}
 	select {
-	case err := <-reply:
+	case err := <-ev.reply:
 		return err
 	case <-r.done:
 		// If the room added c before exiting, it also closed c.
@@ -155,7 +199,8 @@ func (r *Room) submit(ev any) error {
 }
 
 // run returns when ctx is cancelled or the room has had no connections for
-// cfg.IdleTimeout. onExit runs before done is closed.
+// cfg.IdleTimeout. onExit runs before done is closed. An idle room is
+// finished for good; a cancelled one stays recoverable.
 func (r *Room) run(ctx context.Context, onExit func()) {
 	idle := time.NewTimer(r.cfg.IdleTimeout) // armed only while nobody is connected
 	defer idle.Stop()
@@ -172,17 +217,28 @@ func (r *Room) run(ctx context.Context, onExit func()) {
 		close(r.done)
 	}()
 
+	if r.restored {
+		r.persist(OpEpoch{GameID: r.gameID, Epoch: r.epoch})
+		r.applyGame(nil, 0, r.game.Tick(time.Now())) // closes a window that expired during the restart
+	} else {
+		r.persist(OpCreateGame{GameID: r.gameID, Code: r.code, Epoch: r.epoch, PasswordHash: r.passwordHash, Rules: r.game.RulesJSON(), At: time.Now()})
+	}
+	r.persistChanges(time.Now())
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-idle.C:
+			r.persist(OpFinish{GameID: r.gameID, At: time.Now()})
 			return
 		case now := <-r.wake.C:
 			r.applyGame(nil, 0, r.game.Tick(now))
+			r.persistChanges(now)
 		case ev := <-r.inbox:
 			wasEmpty := len(r.byClient) == 0
 			r.handle(ev)
+			r.persistChanges(time.Now())
 			switch isEmpty := len(r.byClient) == 0; {
 			case wasEmpty && !isEmpty:
 				idle.Stop() // relies on Go 1.23+: no stale tick is delivered after Stop
@@ -218,7 +274,7 @@ func (r *Room) handle(ev any) {
 }
 
 func (r *Room) handleJoin(ev joinEvent) {
-	s, err := r.seatFor(ev.join)
+	s, token, err := r.seatFor(ev)
 	if err != nil {
 		ev.reply <- err
 		return
@@ -231,61 +287,71 @@ func (r *Room) handleJoin(ev joinEvent) {
 	ev.reply <- nil
 
 	r.sendTo(s, encode(protocol.MsgWelcome, protocol.Welcome{
-		PlayerID: s.id, Role: s.role, SessionToken: s.token, LastSeq: s.lastSeq,
+		PlayerID: s.id, Role: s.role, SessionToken: token, LastSeq: s.lastSeq,
 	}))
 	r.broadcastState()
 }
 
-// seatFor finds or creates the seat for j. j has passed Join.Validate.
-func (r *Room) seatFor(j protocol.Join) (*seat, error) {
+// seatFor finds or creates the seat for ev and returns the session token the
+// client should keep (empty for moderators). ev.join has passed Join.Validate.
+func (r *Room) seatFor(ev joinEvent) (*seat, string, error) {
+	j := ev.join
 	var name string
 	if j.Name != "" {
 		var err error
 		if name, err = protocol.NormalizeName(j.Name); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 
 	switch j.Role {
 	case protocol.RoleModerator:
-		if err := r.checkModeratorPassword(j.Password, time.Now()); err != nil {
-			return nil, err
+		if err := r.checkModerator(ev.passwordOK, time.Now()); err != nil {
+			return nil, "", err
 		}
 		if r.moderator == nil {
 			r.moderator = &seat{id: "mod", role: protocol.RoleModerator, name: "Moderator"}
+			r.dirty[r.moderator] = true
 		}
-		if name != "" {
+		if name != "" && name != r.moderator.name {
 			r.moderator.name = name
+			r.dirty[r.moderator] = true
 		}
-		return r.moderator, nil
+		return r.moderator, "", nil
 
 	case protocol.RolePlayer:
 		if j.Token != "" {
-			s, ok := r.byToken[j.Token]
+			s, ok := r.byToken[secret.HashToken(j.Token)]
 			if !ok {
-				return nil, ErrUnknownSession
+				return nil, "", ErrUnknownSession
 			}
-			if name != "" {
+			if name != "" && name != s.name {
 				s.name = name
+				r.dirty[s] = true
 			}
-			return s, nil
+			return s, j.Token, nil
 		}
 		if len(r.players) >= r.cfg.MaxPlayersPerRoom {
-			return nil, ErrFull
+			return nil, "", ErrFull
 		}
 		r.nextID++
-		s := &seat{id: "p" + strconv.Itoa(r.nextID), role: protocol.RolePlayer, name: name, token: rand.Text()}
+		token := rand.Text()
+		s := &seat{id: "p" + strconv.Itoa(r.nextID), role: protocol.RolePlayer, name: name, tokenHash: secret.HashToken(token)}
 		r.players = append(r.players, s)
-		r.byToken[s.token] = s
+		r.byToken[s.tokenHash] = s
+		r.dirty[s] = true
 		r.game.PlayerJoined(s.id)
-		return s, nil
+		return s, token, nil
 	}
-	return nil, fmt.Errorf("unknown role %q", j.Role)
+	return nil, "", fmt.Errorf("unknown role %q", j.Role)
 }
 
 func (r *Room) handleMessage(s *seat, in Incoming) {
 	if in.Err != nil {
-		s.lastSeq = max(s.lastSeq, in.Seq)
+		if in.Seq > s.lastSeq {
+			s.lastSeq = in.Seq
+			r.dirty[s] = true
+		}
 		r.sendError(s, in.Seq, protocol.ErrCodeBadMessage, in.Err.Error())
 		return
 	}
@@ -297,6 +363,7 @@ func (r *Room) handleMessage(s *seat, in Incoming) {
 		return // already processed; resent after a reconnect
 	}
 	s.lastSeq = in.Seq
+	r.dirty[s] = true
 
 	switch m := in.Msg.(type) {
 	case protocol.SetName:
@@ -366,6 +433,38 @@ func (r *Room) applyGame(from *seat, seq uint64, res Result) {
 	}
 }
 
+// persistChanges hands the sink everything that changed since the last call:
+// new log entries, changed seats, and the projection if it differs. It never
+// blocks; the game's log is drained even when nothing is being persisted.
+func (r *Room) persistChanges(now time.Time) {
+	evs := r.game.Drain()
+	if r.cfg.Sink == nil || r.unsaved {
+		return
+	}
+	if len(evs) > 0 {
+		r.persist(OpEvents{GameID: r.gameID, Events: evs, At: now})
+	}
+	for s := range r.dirty {
+		r.persist(OpSeat{GameID: r.gameID, Seat: SeatRecord{PlayerID: s.id, Role: s.role, Name: s.name, TokenHash: s.tokenHash, LastSeq: s.lastSeq}})
+	}
+	clear(r.dirty)
+	proj := projection(r.game.View())
+	if b, err := json.Marshal(proj); err == nil && !bytes.Equal(b, r.lastProj) {
+		r.persist(OpProjection{GameID: r.gameID, View: proj})
+		r.lastProj = b
+	}
+}
+
+func (r *Room) persist(op Op) {
+	if r.cfg.Sink == nil || r.unsaved {
+		return
+	}
+	if !r.cfg.Sink.Enqueue(op) {
+		r.unsaved = true // a gap in the log can't be recovered from, so stop entirely
+		r.broadcastState()
+	}
+}
+
 // broadcastState makes a new state pending for every connection. It cannot
 // fail: states replace each other in each mailbox.
 func (r *Room) broadcastState() {
@@ -427,6 +526,7 @@ func (r *Room) snapshot() protocol.RoomState {
 		ModeratorConnected: r.moderator != nil && r.moderator.client != nil,
 		Players:            players,
 		Game:               r.game.View(),
+		Unsaved:            r.unsaved,
 	}
 }
 
@@ -444,15 +544,14 @@ const (
 	moderatorLockout     = time.Minute
 )
 
-// checkModeratorPassword refuses all moderator joins for moderatorLockout
-// after maxModeratorFailures wrong passwords within moderatorLockout, so a
-// player can't guess the password by trying many.
-func (r *Room) checkModeratorPassword(password string, now time.Time) error {
-	if now.Before(r.modLockedUntil) {
+// checkModerator refuses all moderator joins for moderatorLockout after
+// maxModeratorFailures wrong passwords within moderatorLockout, so a player
+// can't guess the password by trying many.
+func (r *Room) checkModerator(passwordOK bool, now time.Time) error {
+	if now.UnixNano() < r.lockedUntil.Load() {
 		return ErrRateLimited
 	}
-	sum := sha256.Sum256([]byte(password))
-	if subtle.ConstantTimeCompare(sum[:], r.moderatorPass[:]) == 1 {
+	if passwordOK {
 		return nil
 	}
 	recent := r.modFailures[:0]
@@ -463,7 +562,8 @@ func (r *Room) checkModeratorPassword(password string, now time.Time) error {
 	}
 	r.modFailures = append(recent, now)
 	if len(r.modFailures) >= maxModeratorFailures {
-		r.modLockedUntil, r.modFailures = now.Add(moderatorLockout), nil
+		r.lockedUntil.Store(now.Add(moderatorLockout).UnixNano())
+		r.modFailures = nil
 	}
 	return ErrUnauthorized
 }

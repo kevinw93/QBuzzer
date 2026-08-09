@@ -20,8 +20,16 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Generated TypeScript is up to date
+      - name: Generated code is up to date
         run: make check-gen
+      - name: Start a throwaway Postgres (127.0.0.1 only, random password)
+        run: |
+          pw=$(openssl rand -hex 16)
+          echo "::add-mask::$pw"
+          docker run -d --name pg -e POSTGRES_PASSWORD="$pw" -p 127.0.0.1:5432:5432 postgres:16
+          for _ in $(seq 30); do docker exec pg pg_isready -U postgres -h 127.0.0.1 && break; sleep 1; done
+          echo "DATABASE_URL=postgres://postgres:$pw@127.0.0.1:5432/postgres?sslmode=disable" >> "$GITHUB_ENV"
+          echo "QBUZZER_REQUIRE_DB=1" >> "$GITHUB_ENV"
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.15.0

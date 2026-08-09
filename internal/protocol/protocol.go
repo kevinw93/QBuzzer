@@ -169,6 +169,7 @@ type RoomState struct {
 	ModeratorConnected bool         `json:"moderatorConnected"`
 	Players            []PlayerView `json:"players"`
 	Game               GameView     `json:"game"`
+	Unsaved            bool         `json:"unsaved,omitempty"` // storage fell behind; this game will not survive a restart
 }
 
 type ErrCode string
@@ -309,7 +310,8 @@ type BuzzView struct {
 	CorrectionMs float64    `json:"correctionMs"`
 	Clamped      bool       `json:"clamped"` // the client's timestamp was implausible
 	Status       BuzzStatus `json:"status"`
-	Power        bool       `json:"power"` // ruled a power
+	Power        bool       `json:"power"`           // ruled a power
+	RTTMs        float64    `json:"rttMs,omitempty"` // the buzzer's connection RTT estimate; 0 if none yet
 	Points       int        `json:"points"`
 }
 

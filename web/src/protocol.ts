@@ -165,6 +165,7 @@ export interface RoomState {
   moderatorConnected: boolean;
   players: PlayerView[];
   game: GameView;
+  unsaved?: boolean; // storage fell behind; this game will not survive a restart
 }
 export const ErrCodeBadMessage = "bad_message";
 export const ErrCodeInvalidName = "invalid_name";
@@ -292,6 +293,7 @@ export interface BuzzView {
   clamped: boolean; // the client's timestamp was implausible
   status: BuzzStatus;
   power: boolean; // ruled a power
+  rttMs?: number /* float64 */; // the buzzer's connection RTT estimate; 0 if none yet
   points: number /* int */;
 }
 /**

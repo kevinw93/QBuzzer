@@ -93,6 +93,7 @@ function Console({ code, password, onBadPassword }: { code: string; password: st
         </button>
       </header>
       <ConnectionBanner snap={snap} />
+      {room.unsaved && <p className="banner warn">Storage fell behind: this game is no longer being saved and won't survive a server restart.</p>}
       <section className="phase">
         <h2>
           Tossup {g.tossupNumber} · {phaseLabel(g)}

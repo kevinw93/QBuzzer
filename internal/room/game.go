@@ -1,6 +1,7 @@
 package room
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
@@ -20,6 +21,10 @@ type Game interface {
 	// PlayerClock reports a player's latest clock estimate, taken at at.
 	PlayerClock(playerID string, est clock.Estimate, at time.Time)
 	View() protocol.GameView
+	// Drain returns the log entries recorded since the last call, in order.
+	Drain() []GameEvent
+	// RulesJSON is the ruleset, stored so a restored game uses the same rules.
+	RulesJSON() json.RawMessage
 }
 
 // Command is a game message from one seat.
@@ -56,3 +61,5 @@ func (unimplementedGame) Tick(time.Time) Result                         { return
 func (unimplementedGame) PlayerJoined(string)                           {}
 func (unimplementedGame) PlayerClock(string, clock.Estimate, time.Time) {}
 func (unimplementedGame) View() protocol.GameView                       { return protocol.GameView{} }
+func (unimplementedGame) Drain() []GameEvent                            { return nil }
+func (unimplementedGame) RulesJSON() json.RawMessage                    { return json.RawMessage("{}") }

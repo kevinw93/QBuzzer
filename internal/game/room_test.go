@@ -13,6 +13,7 @@ import (
 	"github.com/kevinw93/QBuzzer/internal/game"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
+	"github.com/kevinw93/QBuzzer/internal/secret"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
@@ -95,6 +96,7 @@ func TestGameThroughRoom(t *testing.T) {
 		rules := game.Standard()
 		ctx, cancel := context.WithCancel(context.Background())
 		cfg := room.DefaultConfig()
+		cfg.PasswordParams = secret.Fast
 		cfg.NewGame = func() room.Game { return game.New(rules) }
 		hub := room.NewHub(ctx, cfg, slog.New(slog.DiscardHandler))
 		t.Cleanup(func() { cancel(); hub.Wait() })

@@ -11,11 +11,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kevinw93/QBuzzer/internal/game"
 	"github.com/kevinw93/QBuzzer/internal/httpapi"
 	"github.com/kevinw93/QBuzzer/internal/room"
+	"github.com/kevinw93/QBuzzer/internal/store"
 	"github.com/kevinw93/QBuzzer/web"
 )
+
+// recoverWindow is how recently a game must have been active to be restored
+// after a restart; older unfinished games are finished instead.
+const recoverWindow = 2 * time.Hour
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -36,7 +43,39 @@ func run(log *slog.Logger) error {
 
 	cfg := room.DefaultConfig()
 	cfg.NewGame = func() room.Game { return game.New(game.Standard()) }
-	hub := room.NewHub(ctx, cfg, log)
+
+	// Persistence is optional: without DATABASE_URL games live in memory only.
+	var pool *pgxpool.Pool
+	var writer *store.Writer
+	if url := os.Getenv("DATABASE_URL"); url != "" {
+		var err error
+		if pool, err = pgxpool.New(ctx, url); err != nil {
+			return err
+		}
+		defer pool.Close()
+		if err := store.Migrate(ctx, pool); err != nil {
+			return err
+		}
+		writer = store.NewWriter(pool, log, store.DefaultWriterConfig())
+		go writer.Run()
+		cfg.Sink = writer
+	} else {
+		log.Warn("DATABASE_URL not set: games will not survive a restart")
+	}
+
+	// Rooms get their own context so shutdown can stop them before the writer.
+	roomsCtx, stopRooms := context.WithCancel(context.Background())
+	defer stopRooms()
+	hub := room.NewHub(roomsCtx, cfg, log)
+	if pool != nil {
+		restore := func(rules []byte, log []room.GameEvent) (room.Game, error) { return game.Restore(rules, log) }
+		n, err := store.Recover(ctx, pool, hub, restore, time.Now().Add(-recoverWindow), log)
+		if err != nil {
+			return err
+		}
+		log.Info("recovered games", "count", n)
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           httpapi.New(hub, web.Assets(), log),
@@ -58,11 +97,18 @@ func run(log *slog.Logger) error {
 	}
 
 	log.Info("shutting down")
-	// Shutdown does not track hijacked WebSocket connections; the rooms close
-	// those on ctx cancellation, so wait on the hub too.
+	// Order matters: stop accepting requests, stop the rooms (which close
+	// their WebSockets and leave games recoverable), then flush the writer
+	// once nothing can enqueue anymore.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err := srv.Shutdown(shutdownCtx)
+	stopRooms()
 	hub.Wait()
+	if writer != nil {
+		if werr := writer.Close(shutdownCtx); werr != nil {
+			log.Error("writer did not flush before the shutdown deadline", "err", werr)
+		}
+	}
 	return err
 }

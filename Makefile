@@ -1,7 +1,7 @@
 NPM ?= npm
 BIN := bin/qbuzzer
 
-.PHONY: dev gen check-gen test lint build run clean fairness
+.PHONY: dev gen check-gen test test-db lint build run clean fairness
 
 web/node_modules: web/package.json web/package-lock.json
 	cd web && $(NPM) ci
@@ -16,14 +16,19 @@ dev: web/node_modules
 gen:
 	go tool tygo generate
 	go run ./internal/protocol/gen
+	go tool sqlc generate
 
 # Fails if generated TypeScript is stale relative to internal/protocol.
 check-gen: gen
-	@git diff --exit-code -- web/src/protocol.ts web/src/messages.ts || \
-		(echo "generated TypeScript is stale: run 'make gen' and commit" && exit 1)
+	@git diff --exit-code -- web/src/protocol.ts web/src/messages.ts internal/store/db || \
+		(echo "generated code is stale: run 'make gen' and commit" && exit 1)
 
 test:
 	go test -race ./...
+
+# Runs every Go test, including the Postgres ones, against a throwaway database.
+test-db:
+	scripts/with-testdb.sh go test -race ./...
 
 lint: web/node_modules
 	golangci-lint run ./...

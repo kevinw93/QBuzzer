@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kevinw93/QBuzzer/internal/protocol"
+	"github.com/kevinw93/QBuzzer/internal/secret"
 )
 
 type Config struct {
@@ -18,6 +19,8 @@ type Config struct {
 	IdleTimeout       time.Duration // a room with no connections shuts down after this long
 	SendBuffer        int           // per-client queue of non-state messages
 	NewGame           func() Game   // nil: game actions are rejected as not implemented
+	Sink              Sink          // nil: nothing is persisted
+	PasswordParams    secret.Params // zero: secret.Default
 }
 
 func DefaultConfig() Config {
@@ -49,10 +52,17 @@ func NewHub(ctx context.Context, cfg Config, log *slog.Logger) *Hub {
 	return &Hub{ctx: ctx, cfg: cfg, log: log, rooms: make(map[string]*Room)}
 }
 
+// Create starts a room moderated with password. Hashing the password is
+// deliberately slow and happens before taking the hub lock.
 func (h *Hub) Create(password string) (*Room, error) {
 	if err := protocol.ValidatePassword(password); err != nil {
 		return nil, err
 	}
+	params := h.cfg.PasswordParams
+	if params == (secret.Params{}) {
+		params = secret.Default
+	}
+	hash := secret.HashPassword(password, params)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed || h.ctx.Err() != nil {
@@ -65,16 +75,39 @@ func (h *Hub) Create(password string) (*Room, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := newRoom(code, password, h.cfg)
-	h.rooms[code] = r
+	r := newRoom(code, hash, h.cfg)
+	h.start(r)
+	h.log.Info("room created", "code", code)
+	return r, nil
+}
+
+var ErrCodeInUse = errors.New("room code already in use")
+
+// Restore starts a room loaded from storage, under its original code.
+func (h *Hub) Restore(rs Restored) (*Room, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed || h.ctx.Err() != nil {
+		return nil, ErrClosed
+	}
+	if h.rooms[rs.Code] != nil {
+		return nil, ErrCodeInUse
+	}
+	r := restoredRoom(rs, h.cfg)
+	h.start(r)
+	h.log.Info("room restored", "code", rs.Code)
+	return r, nil
+}
+
+// start registers r and runs it. h.mu must be held.
+func (h *Hub) start(r *Room) {
+	h.rooms[r.code] = r
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		r.run(h.ctx, func() { h.remove(code) })
-		h.log.Info("room closed", "code", code)
+		r.run(h.ctx, func() { h.remove(r.code) })
+		h.log.Info("room closed", "code", r.code)
 	}()
-	h.log.Info("room created", "code", code)
-	return r, nil
 }
 
 // Get is case-insensitive.

@@ -25,6 +25,9 @@ type Game struct {
 	// Latest correction cap per player. Not logged: it only feeds the window
 	// length, which is logged on the buzz that opens the window.
 	clocks map[string]playerClock
+
+	pending    []room.GameEvent // durable entries not yet drained
+	persistSeq int
 }
 
 type playerClock struct {
@@ -60,7 +63,7 @@ func (g *Game) Handle(cmd room.Command) room.Result {
 	effects, changed := g.advance(cmd.ReceivedAt)
 
 	if u, ok := cmd.Msg.(protocol.Undo); ok {
-		if err := g.undo(u.ActionID); err != nil {
+		if err := g.undo(u.ActionID, cmd.ReceivedAt); err != nil {
 			return g.result(changed, effects, err)
 		}
 		return g.result(true, effects, nil)
@@ -70,6 +73,9 @@ func (g *Game) Handle(cmd room.Command) room.Result {
 	case protocol.Buzz:
 		p := g.judge(cmd, m.ClientTimeMs)
 		e.arrived, e.correction, e.clamped = cmd.ReceivedAt, p.CorrectionMs, p.Clamped
+		if cmd.ClockOK {
+			e.rtt = cmd.Clock.RTT
+		}
 		e.at = msBefore(cmd.ReceivedAt, p.CorrectionMs)
 		if g.s.phase == protocol.PhaseReading {
 			e.window = g.window(cmd.ReceivedAt)
@@ -134,6 +140,7 @@ func (g *Game) record(e event) ([]protocol.Effect, error) {
 	g.nextID = e.id
 	g.log = append(g.log, e)
 	g.s = next
+	g.logEvent(e)
 	return effects, nil
 }
 
@@ -168,7 +175,7 @@ func (g *Game) wakeAt() time.Time {
 
 // undo reverts the latest undoable action and every later non-roster event,
 // then rebuilds the state from the remaining log.
-func (g *Game) undo(id string) error {
+func (g *Game) undo(id string, at time.Time) error {
 	if g.s.lastAction == 0 || id != actionID(g.s.lastAction) {
 		return stale("action %s is not the latest undoable action", id)
 	}
@@ -178,6 +185,7 @@ func (g *Game) undo(id string) error {
 		}
 	}
 	g.s = replay(g.rules, g.log)
+	g.appendStored(kindUndo, at, stored{ActionID: id})
 	return nil
 }
 
