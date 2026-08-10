@@ -128,14 +128,16 @@ func TestGameThroughRoom(t *testing.T) {
 		// The room's wake timer closes the window with no further commands.
 		time.Sleep(rules.MaxBuzzWindow + 10*time.Millisecond)
 		envs := mod.drain()
-		if len(envs) != 2 || envs[0].Type != protocol.MsgBuzzLocked || envs[1].Type != protocol.MsgState {
-			t.Fatalf("after window: %d messages %+v", len(envs), envs)
+		if len(envs) != 1 || envs[0].Type != protocol.MsgState {
+			t.Fatalf("after window: %d messages %+v; want one state carrying the lock", len(envs), envs)
 		}
-		var locked protocol.BuzzLocked
 		var s protocol.RoomState
-		_ = json.Unmarshal(envs[0].Payload, &locked)
-		_ = json.Unmarshal(envs[1].Payload, &s)
-		if locked.PlayerID != alice.id || locked.Version != s.Version || s.Game.Phase != protocol.PhaseAwaitingRuling {
+		_ = json.Unmarshal(envs[0].Payload, &s)
+		var locked protocol.BuzzLocked
+		if len(s.Effects) == 1 && s.Effects[0].Type == protocol.MsgBuzzLocked {
+			_ = json.Unmarshal(s.Effects[0].Payload, &locked)
+		}
+		if locked.PlayerID != alice.id || s.Game.Phase != protocol.PhaseAwaitingRuling {
 			t.Fatalf("locked %+v, state %+v", locked, s.Game)
 		}
 		buzz := s.Game.Buzzes[0]

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
+	"github.com/kevinw93/QBuzzer/internal/metrics"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/secret"
 )
@@ -85,6 +86,7 @@ type Room struct {
 	restored  bool
 	game      Game
 	wake      *time.Timer // fires at the game's latest WakeAt; created stopped in run
+	wakeAt    time.Time   // when wake is due; for measuring lateness
 	players   []*seat     // join order
 	moderator *seat       // nil until a moderator first joins
 	byToken   map[string]*seat
@@ -94,9 +96,10 @@ type Room struct {
 
 	modFailures []time.Time // wrong passwords in the last moderatorLockout
 
-	dirty    map[*seat]bool // seats changed since the last persist
-	lastProj []byte         // last persisted projection
-	unsaved  bool           // the sink refused an op; persistence stopped
+	dirty    map[*seat]bool      // seats changed since the last persist
+	lastProj []byte              // last persisted projection
+	effects  []protocol.Envelope // for the next broadcast state
+	unsaved  bool                // the sink refused an op; persistence stopped
 }
 
 func newRoom(code, passwordHash string, cfg Config) *Room {
@@ -233,6 +236,7 @@ func (r *Room) run(ctx context.Context, onExit func()) {
 			r.persist(OpFinish{GameID: r.gameID, At: time.Now()})
 			return
 		case now := <-r.wake.C:
+			metrics.LockLateness.Observe(msSince(r.wakeAt))
 			r.applyGame(nil, 0, r.game.Tick(now))
 			r.persistChanges(now)
 		case ev := <-r.inbox:
@@ -261,6 +265,7 @@ func (r *Room) handle(ev any) {
 			r.broadcastState()
 		}
 	case messageEvent:
+		metrics.InboxDelay.Observe(msSince(ev.in.ReceivedAt))
 		if s, ok := r.byClient[ev.c]; ok {
 			r.handleMessage(s, ev.in)
 		}
@@ -407,6 +412,7 @@ func (r *Room) applyGame(from *seat, seq uint64, res Result) {
 	if res.WakeAt.IsZero() {
 		r.wake.Stop()
 	} else {
+		r.wakeAt = res.WakeAt
 		r.wake.Reset(time.Until(res.WakeAt)) // a past WakeAt fires immediately
 	}
 	if res.Reject != nil && from != nil {
@@ -416,19 +422,14 @@ func (r *Room) applyGame(from *seat, seq uint64, res Result) {
 			res.Changed = true // the sender was dropped; others must see it
 		}
 	}
-	// Effects are queued before the state is set, so a client never sees an
-	// effect's state before the effect itself; v is the version that state
-	// will get.
-	v := r.version
-	if res.Changed {
-		v++
-	}
 	for _, e := range res.Effects {
-		if r.broadcastEvent(encode(e.EffectType(), e.WithVersion(v))) {
-			res.Changed = true
+		env, err := protocol.EncodeEffect(e)
+		if err != nil {
+			panic(fmt.Sprintf("room: %v", err))
 		}
+		r.effects = append(r.effects, env)
 	}
-	if res.Changed {
+	if res.Changed || len(r.effects) > 0 {
 		r.broadcastState()
 	}
 }
@@ -468,27 +469,18 @@ func (r *Room) persist(op Op) {
 // broadcastState makes a new state pending for every connection. It cannot
 // fail: states replace each other in each mailbox.
 func (r *Room) broadcastState() {
+	start := time.Now()
 	r.version++
 	msg := encode(protocol.MsgState, r.snapshot())
+	r.effects = nil
 	for c := range r.byClient {
 		c.setState(msg)
 	}
+	metrics.Broadcast.Observe(msSince(start))
+	metrics.StateBytes.Observe(float64(len(msg)))
 }
 
-// broadcastEvent queues msg for every connection, dropping any whose queue is
-// full. It reports whether anyone was dropped; the caller must then broadcast.
-func (r *Room) broadcastEvent(msg []byte) bool {
-	var slow []*seat
-	for c, s := range r.byClient {
-		if !c.enqueue(msg) {
-			slow = append(slow, s)
-		}
-	}
-	for _, s := range slow {
-		r.disconnect(s, ReasonSlow)
-	}
-	return len(slow) > 0
-}
+func msSince(t time.Time) float64 { return float64(time.Since(t).Nanoseconds()) / 1e6 }
 
 func (r *Room) sendError(s *seat, seq uint64, code protocol.ErrCode, message string) {
 	msg := encode(protocol.MsgError, protocol.ErrorMessage{Code: code, Message: message, Seq: seq})
@@ -527,6 +519,7 @@ func (r *Room) snapshot() protocol.RoomState {
 		Players:            players,
 		Game:               r.game.View(),
 		Unsaved:            r.unsaved,
+		Effects:            r.effects,
 	}
 }
 

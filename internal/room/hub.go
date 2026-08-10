@@ -155,3 +155,10 @@ func newCode() string {
 	}
 	return string(b[:])
 }
+
+// Len is the number of live rooms.
+func (h *Hub) Len() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.rooms)
+}

@@ -22,6 +22,8 @@ export type ServerMessage =
   | { type: 'state'; payload: p.RoomState }
   | { type: 'error'; payload: p.ErrorMessage }
   | { type: 'ping'; payload: p.Ping }
+
+export type StateEffect =
   | { type: 'buzz_locked'; payload: p.BuzzLocked }
   | { type: 'ruled'; payload: p.Ruled }
   | { type: 'score_changed'; payload: p.ScoreChanged }

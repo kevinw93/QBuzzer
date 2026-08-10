@@ -1,4 +1,4 @@
-import type { ClientMessage, PayloadOf, ServerMessage } from '../messages'
+import type { ClientMessage, PayloadOf, ServerMessage, StateEffect } from '../messages'
 import * as p from '../protocol'
 
 /** Client clock: monotonic, Unix-epoch milliseconds. Matches what the server's
@@ -28,7 +28,7 @@ export interface Snapshot {
 
 type SeqMessage = Extract<ClientMessage, { seq: number }>
 export type SeqType = SeqMessage['type']
-export type Effect = Extract<ServerMessage, { type: 'buzz_locked' | 'ruled' | 'score_changed' }>
+export type Effect = StateEffect
 
 export interface KV {
   getItem(key: string): string | null
@@ -170,7 +170,11 @@ export class RoomConnection {
       case 'state': {
         const s = msg.payload
         const cur = this.snap.room
-        if (cur === null || s.epoch !== cur.epoch || s.version > cur.version) this.update({ room: s })
+        if (cur === null || s.epoch !== cur.epoch || s.version > cur.version) {
+          this.update({ room: s })
+          // Effects ride inside the state they describe; a stale state's are dropped with it.
+          for (const e of (s.effects ?? []) as Effect[]) for (const fn of this.effectListeners) fn(e)
+        }
         return
       }
       case 'ping': {
@@ -183,8 +187,6 @@ export class RoomConnection {
       case 'error':
         this.update({ lastError: msg.payload })
         return
-      default:
-        for (const fn of this.effectListeners) fn(msg)
     }
   }
 

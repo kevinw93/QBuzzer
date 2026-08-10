@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -90,6 +92,22 @@ func run(log *slog.Logger) error {
 		errc <- srv.ListenAndServe()
 	}()
 
+	// Profiling and runtime stats, off unless asked for, and never on a
+	// non-loopback address. Reach it remotely through an SSH tunnel.
+	var debugSrv *http.Server
+	if daddr := os.Getenv("QBUZZER_DEBUG_ADDR"); daddr != "" {
+		if err := httpapi.CheckLoopback(daddr); err != nil {
+			return fmt.Errorf("QBUZZER_DEBUG_ADDR=%s: %w", daddr, err)
+		}
+		debugSrv = &http.Server{Addr: daddr, Handler: httpapi.NewDebug(hub), ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			log.Info("debug listening", "addr", daddr)
+			if err := debugSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("debug listener", "err", err)
+			}
+		}()
+	}
+
 	select {
 	case err := <-errc:
 		return err
@@ -103,6 +121,9 @@ func run(log *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err := srv.Shutdown(shutdownCtx)
+	if debugSrv != nil {
+		_ = debugSrv.Shutdown(shutdownCtx)
+	}
 	stopRooms()
 	hub.Wait()
 	if writer != nil {

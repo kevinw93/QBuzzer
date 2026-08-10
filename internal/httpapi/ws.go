@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
+	"github.com/kevinw93/QBuzzer/internal/metrics"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
@@ -154,6 +156,7 @@ func writeLoop(ctx context.Context, conn *websocket.Conn, c *room.Client, starte
 		if err != nil {
 			return
 		}
+		metrics.CountOutbound(msgType(msg))
 		wctx, cancel := context.WithTimeout(ctx, writeTimeout)
 		err = conn.Write(wctx, websocket.MessageText, msg)
 		cancel()
@@ -191,6 +194,7 @@ func (s *Server) pinger(ctx context.Context, conn *websocket.Conn, cs *clock.Ses
 			if est, ok := cs.Estimate(now); ok {
 				p.RTTMs, p.BoundMs = est.RTT, est.Bound
 			}
+			metrics.CountOutbound(string(protocol.MsgPing))
 			msg, err := protocol.Encode(protocol.MsgPing, p)
 			if err != nil {
 				panic(err)
@@ -262,4 +266,18 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:120]
+}
+
+// msgType reads an encoded envelope's type without decoding it: every
+// envelope starts with {"type":"...".
+func msgType(msg []byte) string {
+	const prefix = `{"type":"`
+	if !bytes.HasPrefix(msg, []byte(prefix)) {
+		return "unknown"
+	}
+	rest := msg[len(prefix):]
+	if end := bytes.IndexByte(rest, '"'); end >= 0 {
+		return string(rest[:end])
+	}
+	return "unknown"
 }

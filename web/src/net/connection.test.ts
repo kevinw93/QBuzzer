@@ -256,11 +256,17 @@ describe('close codes', () => {
 })
 
 describe('effects', () => {
-  it('delivers effect events to listeners', () => {
+  it('delivers the effects of each applied state, and none from stale ones', () => {
     const { conn } = connected()
     const seen: string[] = []
     conn.onEffect((e) => seen.push(e.type))
-    latest().receive({ type: 'buzz_locked', payload: { version: 3, tossupId: 't1', buzzId: 'b1', playerId: 'p1' } })
+    const withEffect = (version: number): ServerMessage => {
+      const s = state('e1', version)
+      if (s.type === 'state') s.payload.effects = [{ type: 'buzz_locked', payload: { tossupId: 't1', buzzId: 'b1', playerId: 'p1' } }]
+      return s
+    }
+    latest().receive(withEffect(3))
+    latest().receive(withEffect(2)) // stale: neither the state nor its effects apply
     expect(seen).toEqual(['buzz_locked'])
   })
 })

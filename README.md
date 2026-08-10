@@ -87,3 +87,16 @@ SHA-256 hashes; neither is stored in plain text.
 ```sh
 make test-db   # all Go tests, including Postgres ones, against a throwaway database
 ```
+
+## Performance
+
+200 rooms × 9 connections on one laptop: the lock fires within 0.5 ms of its
+deadline at p99, and the server uses about half a core
+([details, method, and before/after profiles](docs/loadtest.md)).
+Profiling is available on a loopback-only debug listener:
+
+```sh
+QBUZZER_DEBUG_ADDR=127.0.0.1:6060 ./bin/qbuzzer
+go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
+scripts/loadtest.sh loadtest/run -rooms 200 -players 8 -network mixed
+```

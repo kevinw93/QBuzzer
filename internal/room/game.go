@@ -42,7 +42,7 @@ type Command struct {
 type Result struct {
 	Reject  *protocol.ErrorMessage // sent only to the sender; the room fills in Seq
 	Changed bool                   // game state changed: broadcast a new RoomState
-	Effects []protocol.Effect      // broadcast before the state, stamped with its version
+	Effects []protocol.Effect      // delivered inside the next RoomState
 	WakeAt  time.Time              // when to call Tick; zero cancels any pending wakeup
 }
 

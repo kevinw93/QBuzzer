@@ -10,3 +10,4 @@
 .idea
 /web/test-results/
 /web/playwright-report/
+/loadtest/

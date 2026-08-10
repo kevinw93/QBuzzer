@@ -49,6 +49,9 @@ export const MsgWelcome: MsgType = "welcome";
 export const MsgState: MsgType = "state";
 export const MsgError: MsgType = "error";
 export const MsgPing: MsgType = "ping";
+/**
+ * Effects, inside RoomState.Effects.
+ */
 export const MsgBuzzLocked: MsgType = "buzz_locked";
 export const MsgRuled: MsgType = "ruled";
 export const MsgScoreChanged: MsgType = "score_changed";
@@ -166,6 +169,7 @@ export interface RoomState {
   players: PlayerView[];
   game: GameView;
   unsaved?: boolean; // storage fell behind; this game will not survive a restart
+  effects?: Envelope[]; // effects of the change that produced this version
 }
 export const ErrCodeBadMessage = "bad_message";
 export const ErrCodeInvalidName = "invalid_name";
@@ -194,26 +198,23 @@ export interface Ping {
   boundMs?: number /* float64 */;
 }
 /**
- * BuzzLocked, Ruled, and ScoreChanged trigger UI effects (sounds, flashes).
- * They never carry state the client should apply: the RoomState at Version
- * is authoritative, and losing one of these is harmless. An effect arrives
- * before the RoomState with its Version, never after.
+ * BuzzLocked, Ruled, and ScoreChanged are effects: they trigger UI feedback
+ * (sounds, flashes) and ride inside the RoomState whose change they describe
+ * (RoomState.Effects). They never carry state the client should apply, and
+ * losing one (its state superseded before delivery) is harmless.
  */
 export interface BuzzLocked {
-  version: number /* uint64 */;
   tossupId: string;
   buzzId: string;
   playerId: string;
 }
 export interface Ruled {
-  version: number /* uint64 */;
   buzzId: string;
   playerId: string;
   result: Ruling;
   points: number /* int */;
 }
 export interface ScoreChanged {
-  version: number /* uint64 */;
   teamId: string;
   delta: number /* int */;
 }

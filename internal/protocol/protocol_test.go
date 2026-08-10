@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -46,13 +47,13 @@ var samples = map[MsgType]any{
 	},
 	MsgError:        ErrorMessage{Code: ErrCodeStale, Message: "buzz b6 is no longer pending", Seq: 12},
 	MsgPing:         Ping{ID: 9, RTTMs: 21.5, BoundMs: 10.75},
-	MsgBuzzLocked:   BuzzLocked{Version: 6, TossupID: "t3", BuzzID: "b7", PlayerID: "p2"},
-	MsgRuled:        Ruled{Version: 7, BuzzID: "b7", PlayerID: "p2", Result: RulingPower, Points: 15},
-	MsgScoreChanged: ScoreChanged{Version: 7, TeamID: "T2", Delta: -5},
+	MsgBuzzLocked:   BuzzLocked{TossupID: "t3", BuzzID: "b7", PlayerID: "p2"},
+	MsgRuled:        Ruled{BuzzID: "b7", PlayerID: "p2", Result: RulingPower, Points: 15},
+	MsgScoreChanged: ScoreChanged{TeamID: "T2", Delta: -5},
 }
 
 func TestEverySpecHasASample(t *testing.T) {
-	for _, s := range append(ClientSpecs(), ServerSpecs()...) {
+	for _, s := range slices.Concat(ClientSpecs(), ServerSpecs(), EffectSpecs()) {
 		sample, ok := samples[s.Type]
 		if !ok {
 			t.Errorf("no sample for %q", s.Type)
@@ -277,25 +278,27 @@ func TestNormalizeName(t *testing.T) {
 	}
 }
 
-func TestEffectsAreRegisteredServerMessages(t *testing.T) {
-	for _, e := range []Effect{BuzzLocked{}, Ruled{}, ScoreChanged{}} {
-		stamped := e.WithVersion(42)
-		b, err := Encode(e.EffectType(), stamped)
+func TestEffectsRideInState(t *testing.T) {
+	for _, s := range EffectSpecs() {
+		e := samples[s.Type].(Effect) //nolint:forcetypeassert // effect samples are Effects
+		env, err := EncodeEffect(e)
 		if err != nil {
-			t.Errorf("%T: %v", e, err)
-			continue
+			t.Fatal(err)
 		}
-		var env struct {
-			Payload struct {
-				Version uint64 `json:"version"`
-			} `json:"payload"`
+		if env.Type != s.Type {
+			t.Errorf("type = %q, want %q", env.Type, s.Type)
 		}
-		if err := json.Unmarshal(b, &env); err != nil || env.Payload.Version != 42 {
-			t.Errorf("%T: version not stamped: %s", e, b)
+		ptr := reflect.New(reflect.TypeOf(e))
+		if err := json.Unmarshal(env.Payload, ptr.Interface()); err != nil || !reflect.DeepEqual(ptr.Elem().Interface(), e) {
+			t.Errorf("%s did not round-trip: %s", s.Type, env.Payload)
 		}
-		if reflect.ValueOf(e).FieldByName("Version").Uint() != 0 {
-			t.Errorf("%T: WithVersion mutated the receiver", e)
+		if _, err := Encode(s.Type, e); err == nil {
+			t.Errorf("%s can still be sent as a top-level message", s.Type)
 		}
+	}
+	b, err := Encode(MsgState, RoomState{Players: []PlayerView{}, Effects: []Envelope{{Type: MsgBuzzLocked, Payload: json.RawMessage(`{"tossupId":"t1","buzzId":"b1","playerId":"p1"}`)}}})
+	if err != nil || !strings.Contains(string(b), `"effects":[{"type":"buzz_locked","payload":{"tossupId":"t1"`) {
+		t.Errorf("state with effects = %s, %v", b, err)
 	}
 }
 

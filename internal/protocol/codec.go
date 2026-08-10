@@ -40,6 +40,9 @@ var serverSpecs = []Spec{
 	{MsgState, RoomState{}, false},
 	{MsgError, ErrorMessage{}, false},
 	{MsgPing, Ping{}, false},
+}
+
+var effectSpecs = []Spec{
 	{MsgBuzzLocked, BuzzLocked{}, false},
 	{MsgRuled, Ruled{}, false},
 	{MsgScoreChanged, ScoreChanged{}, false},
@@ -48,6 +51,7 @@ var serverSpecs = []Spec{
 var (
 	clientIndex = index(clientSpecs)
 	serverIndex = index(serverSpecs)
+	effectIndex = index(effectSpecs)
 )
 
 func index(specs []Spec) map[MsgType]Spec {
@@ -63,6 +67,7 @@ func index(specs []Spec) map[MsgType]Spec {
 
 func ClientSpecs() []Spec { return slices.Clone(clientSpecs) }
 func ServerSpecs() []Spec { return slices.Clone(serverSpecs) }
+func EffectSpecs() []Spec { return slices.Clone(effectSpecs) }
 
 // Encode builds a server -> client envelope. It returns an error if payload
 // is not the registered type for typ.
@@ -220,21 +225,28 @@ func requireID(field, id string) error {
 	return nil
 }
 
-// Effect is implemented by the effect events (BuzzLocked, Ruled,
-// ScoreChanged). WithVersion returns a copy referring to the state version
-// that contains the effect's change.
+// Effect is implemented by the effect payloads (BuzzLocked, Ruled,
+// ScoreChanged).
 type Effect interface {
 	EffectType() MsgType
-	WithVersion(v uint64) Effect
 }
 
-func (e BuzzLocked) EffectType() MsgType   { return MsgBuzzLocked }
-func (e Ruled) EffectType() MsgType        { return MsgRuled }
-func (e ScoreChanged) EffectType() MsgType { return MsgScoreChanged }
+func (BuzzLocked) EffectType() MsgType   { return MsgBuzzLocked }
+func (Ruled) EffectType() MsgType        { return MsgRuled }
+func (ScoreChanged) EffectType() MsgType { return MsgScoreChanged }
 
-func (e BuzzLocked) WithVersion(v uint64) Effect   { e.Version = v; return e }
-func (e Ruled) WithVersion(v uint64) Effect        { e.Version = v; return e }
-func (e ScoreChanged) WithVersion(v uint64) Effect { e.Version = v; return e }
+// EncodeEffect wraps an effect for RoomState.Effects.
+func EncodeEffect(e Effect) (Envelope, error) {
+	spec, ok := effectIndex[e.EffectType()]
+	if !ok || reflect.TypeOf(e) != reflect.TypeOf(spec.Payload) {
+		return Envelope{}, fmt.Errorf("protocol: unregistered effect %T", e)
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		return Envelope{}, err
+	}
+	return Envelope{Type: e.EffectType(), Payload: data}, nil
+}
 
 func (m RuleBonus) Validate() error {
 	if m.Part < 0 || m.Part >= MaxBonusParts {

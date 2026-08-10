@@ -440,11 +440,20 @@ func TestGameResultIsApplied(t *testing.T) {
 
 		send(t, r, a, 2, protocol.Buzz{TossupID: "t1"})
 		for _, c := range []*Client{a, b} {
-			e := recvAs[protocol.BuzzLocked](t, c, protocol.MsgBuzzLocked)
-			s := recvAs[protocol.RoomState](t, c, protocol.MsgState)
-			if e.PlayerID != wa.PlayerID || e.Version != s.Version || e.Version == 0 {
-				t.Errorf("effect %+v, state version %d", e, s.Version)
+			s := recvAs[protocol.RoomState](t, c, protocol.MsgState) // one message: the state carries its effect
+			if len(s.Effects) != 1 || s.Effects[0].Type != protocol.MsgBuzzLocked {
+				t.Fatalf("effects = %+v", s.Effects)
 			}
+			var e protocol.BuzzLocked
+			_ = json.Unmarshal(s.Effects[0].Payload, &e)
+			if e.PlayerID != wa.PlayerID {
+				t.Errorf("effect %+v", e)
+			}
+			expectNothing(t, c)
+		}
+		send(t, r, a, 3, protocol.SetName{Name: "Alicia"}) // the next state carries no stale effects
+		if s := stateUntil(t, a, namesAre("Alicia,Bob")); len(s.Effects) != 0 {
+			t.Errorf("effects repeated: %+v", s.Effects)
 		}
 	})
 }

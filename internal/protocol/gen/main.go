@@ -22,6 +22,7 @@ func main() {
 	b.WriteString("import type * as p from './protocol'\n\n")
 	writeUnion(&b, "ClientMessage", protocol.ClientSpecs())
 	writeUnion(&b, "ServerMessage", protocol.ServerSpecs())
+	writeUnion(&b, "StateEffect", protocol.EffectSpecs())
 	b.WriteString("export type ClientMessageType = ClientMessage['type']\n")
 	b.WriteString("export type ServerMessageType = ServerMessage['type']\n\n")
 	b.WriteString("export type PayloadOf<M extends { type: string; payload: unknown }, T extends M['type']> =\n")

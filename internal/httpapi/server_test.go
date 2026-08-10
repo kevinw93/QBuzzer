@@ -468,14 +468,14 @@ func TestTossupOverWebSockets(t *testing.T) {
 	stateUntil(t, alice, func(s protocol.RoomState) bool { return s.Game.Phase == protocol.PhaseReading })
 	send(t, alice, protocol.MsgBuzz, 1, protocol.Buzz{TossupID: "t1"})
 
-	locked := readUntil(t, mod, protocol.MsgBuzzLocked, func(protocol.BuzzLocked) bool { return true })
-	if locked.PlayerID != w.PlayerID {
-		t.Fatalf("locked = %+v", locked)
-	}
 	var buzzID string
 	stateUntil(t, mod, func(s protocol.RoomState) bool {
-		if s.Version < locked.Version || s.Game.Phase != protocol.PhaseAwaitingRuling {
+		if s.Game.Phase != protocol.PhaseAwaitingRuling {
 			return false
+		}
+		var locked protocol.BuzzLocked
+		if len(s.Effects) != 1 || json.Unmarshal(s.Effects[0].Payload, &locked) != nil || locked.PlayerID != w.PlayerID {
+			t.Fatalf("lock state effects = %+v", s.Effects)
 		}
 		buzzID = s.Game.Buzzes[0].ID
 		return true

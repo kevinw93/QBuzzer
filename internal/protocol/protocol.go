@@ -39,10 +39,12 @@ const (
 	MsgChooseTeam  MsgType = "choose_team"
 
 	// Server -> client.
-	MsgWelcome      MsgType = "welcome"
-	MsgState        MsgType = "state"
-	MsgError        MsgType = "error"
-	MsgPing         MsgType = "ping"
+	MsgWelcome MsgType = "welcome"
+	MsgState   MsgType = "state"
+	MsgError   MsgType = "error"
+	MsgPing    MsgType = "ping"
+
+	// Effects, inside RoomState.Effects.
 	MsgBuzzLocked   MsgType = "buzz_locked"
 	MsgRuled        MsgType = "ruled"
 	MsgScoreChanged MsgType = "score_changed"
@@ -170,6 +172,7 @@ type RoomState struct {
 	Players            []PlayerView `json:"players"`
 	Game               GameView     `json:"game"`
 	Unsaved            bool         `json:"unsaved,omitempty"` // storage fell behind; this game will not survive a restart
+	Effects            []Envelope   `json:"effects,omitempty"` // effects of the change that produced this version
 }
 
 type ErrCode string
@@ -200,19 +203,17 @@ type Ping struct {
 	BoundMs float64 `json:"boundMs,omitempty"`
 }
 
-// BuzzLocked, Ruled, and ScoreChanged trigger UI effects (sounds, flashes).
-// They never carry state the client should apply: the RoomState at Version
-// is authoritative, and losing one of these is harmless. An effect arrives
-// before the RoomState with its Version, never after.
+// BuzzLocked, Ruled, and ScoreChanged are effects: they trigger UI feedback
+// (sounds, flashes) and ride inside the RoomState whose change they describe
+// (RoomState.Effects). They never carry state the client should apply, and
+// losing one (its state superseded before delivery) is harmless.
 type BuzzLocked struct {
-	Version  uint64 `json:"version"`
 	TossupID string `json:"tossupId"`
 	BuzzID   string `json:"buzzId"`
 	PlayerID string `json:"playerId"`
 }
 
 type Ruled struct {
-	Version  uint64 `json:"version"`
 	BuzzID   string `json:"buzzId"`
 	PlayerID string `json:"playerId"`
 	Result   Ruling `json:"result"`
@@ -220,9 +221,8 @@ type Ruled struct {
 }
 
 type ScoreChanged struct {
-	Version uint64 `json:"version"`
-	TeamID  string `json:"teamId"`
-	Delta   int    `json:"delta"`
+	TeamID string `json:"teamId"`
+	Delta  int    `json:"delta"`
 }
 
 // ---- HTTP ----
