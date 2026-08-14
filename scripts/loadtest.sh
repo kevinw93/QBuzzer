@@ -11,7 +11,7 @@ go build -o bin/loadgen ./cmd/loadgen
 export QBUZZER_LOADTEST_OUT=$out QBUZZER_LOADTEST_ARGS="$*"
 exec scripts/with-testdb.sh bash -c '
   ulimit -n 20000
-  export QBUZZER_ADDR=127.0.0.1:18180 QBUZZER_DEBUG_ADDR=127.0.0.1:6061
+  export QBUZZER_ADDR=127.0.0.1:18180 QBUZZER_DEBUG_ADDR=127.0.0.1:6061 QBUZZER_RATE_LIMITS=off # every simulated client shares 127.0.0.1
   ./bin/qbuzzer >"$QBUZZER_LOADTEST_OUT/server.log" 2>&1 &
   srv=$!
   trap "kill -INT $srv 2>/dev/null; wait $srv" EXIT

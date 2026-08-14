@@ -112,8 +112,7 @@ type Next struct {
 	TossupID string `json:"tossupId"`
 }
 
-// Ruling is the moderator's verdict on a buzz. The moderator decides powers
-// and negs; QBuzzer can't know which word a player heard.
+// Ruling is the moderator's verdict on a buzz.
 type Ruling string
 
 const (

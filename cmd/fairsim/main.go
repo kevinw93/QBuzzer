@@ -54,7 +54,7 @@ const (
 	warmupMs      = 30_000
 )
 
-// Correction caps. capRTTBound is fair.Cap; capRTT (the original spec) omits
+// Correction caps. capRTTBound is fair.Cap; capRTT omits
 // the offset estimate's own error, which is up to Bound in either direction.
 type capFn func(clock.Estimate) float64
 

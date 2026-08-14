@@ -29,6 +29,9 @@ const (
 // keepalive per connection. Only these goroutines touch the socket; only the room touches
 // room state.
 func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
+	if !s.allow(w, r, s.opts.JoinLimit, "join") {
+		return
+	}
 	rm, ok := s.hub.Get(r.PathValue("code"))
 	if !ok {
 		http.Error(w, "room not found", http.StatusNotFound)
@@ -41,6 +44,8 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(maxMessageBytes)
+	metrics.Connections.Add(1)
+	defer metrics.Connections.Add(-1)
 
 	join, ok := s.readJoin(conn)
 	if !ok {

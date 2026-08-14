@@ -1,0 +1,42 @@
+# Exactly one machine (deploy with --ha=false): rooms live in process memory.
+app = "qbuzzer-kevinw93"
+primary_region = "ord"
+kill_signal = "SIGTERM" # rooms stop recoverably, then the writer flushes
+kill_timeout = "15s"
+
+[env]
+  # Reached only through Fly's TLS proxy.
+  QBUZZER_ADDR = "0.0.0.0:8080"
+  # Fly private network only; must never become an http_service.
+  QBUZZER_METRICS_ADDR = "[::]:9091"
+  # Trusted only because Fly's proxy overwrites client-sent values.
+  QBUZZER_CLIENT_IP_HEADER = "Fly-Client-IP"
+  QBUZZER_LOG_FORMAT = "json"
+  # DATABASE_URL: secret, set by fly mpg attach.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off" # a stopped machine ends every live game
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections" # WebSockets are long-lived
+    soft_limit = 3000
+    hard_limit = 4000
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "2s"
+
+[metrics]
+  port = 9091
+  path = "/metrics"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

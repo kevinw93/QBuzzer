@@ -38,11 +38,9 @@ var ErrClientClosed = errors.New("client closed")
 // Client is a room's outbound mailbox for one connection. The room goroutine
 // is the only producer; the connection's writer is the only consumer.
 //
-// States are conflated: a pending RoomState is replaced by a newer one, since
-// each is a complete snapshot. Other messages (welcome, errors, effect events)
-// are queued in order, and the queue is bounded: overflowing it is how the
-// room detects a client that cannot keep up. Producers never wait on I/O; the
-// mutex is only held for slice operations.
+// A pending RoomState is replaced by a newer one. Other messages (welcome,
+// errors) are queued in order; overflowing the bounded queue marks the client
+// too slow. Producers never wait on I/O.
 type Client struct {
 	notify chan struct{} // capacity 1; signaled whenever something becomes pending
 	limit  int
@@ -60,8 +58,7 @@ func newClient(limit int) *Client {
 
 // Next blocks until a message is pending, the client is closed
 // (ErrClientClosed), or ctx is done. Queued messages are returned before the
-// pending state, so an effect event always precedes the state it refers to.
-// Closing discards anything still pending.
+// pending state. Closing discards anything still pending.
 func (c *Client) Next(ctx context.Context) ([]byte, error) {
 	for {
 		c.mu.Lock()

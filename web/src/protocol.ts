@@ -112,8 +112,7 @@ export interface Next {
   tossupId: string;
 }
 /**
- * Ruling is the moderator's verdict on a buzz. The moderator decides powers
- * and negs; QBuzzer can't know which word a player heard.
+ * Ruling is the moderator's verdict on a buzz.
  */
 export const RulingPower = "power"; // correct, before the power mark
 export const RulingCorrect = "correct"; // correct, no power

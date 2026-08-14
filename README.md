@@ -45,16 +45,12 @@ The server listens on `127.0.0.1:8080`; set `QBUZZER_ADDR` to override.
 
 ## Fairness
 
-Players hear the moderator over voice chat and buzz over their own networks,
-so "first to arrive" is often not "first to press". QBuzzer judges each buzz
-by the client's press timestamp converted to server time with a per-connection
-clock estimate (NTP-style ping exchanges), caps how far any client can move its
-own buzz (RTT + estimate bound + 10 ms), and waits a short adaptive window
-(the largest cap among eligible players, at most 100 ms) before locking in the
-earliest press.
+A buzz is judged by the client's press timestamp converted to server time
+(per-connection NTP-style clock estimate). The correction is capped at
+RTT + estimate bound + 10 ms, and the lock waits an adaptive window (largest
+cap among eligible players, at most 100 ms).
 
-Simulated across mixed home, mobile, and asymmetric networks
-([full results and assumptions](docs/fairness.md), regenerate with
+Simulated on mixed networks ([results and assumptions](docs/fairness.md),
 `make fairness`):
 
 | | First presser wins (all tossups) | First presser wins (presses < 25 ms apart) | Lock delay |
@@ -62,27 +58,28 @@ Simulated across mixed home, mobile, and asymmetric networks
 | Arrival order | 84.2% | 62.0% | 0 ms |
 | QBuzzer | 93.7% | 83.3% | 105 ms |
 
-What's not fixed: voice-chat delay. In about half of close races, the player
-who *reacted* fastest after hearing the clue isn't the one who pressed first,
-because their audio arrived later. Measuring that needs the moderator's audio
-to go through QBuzzer (WebRTC playout timestamps), a planned stretch goal.
-Powers and negs are the moderator's call (Power / 10 / Neg / 0 buttons): without
-the audio, QBuzzer can't know which word a player heard.
+Not corrected: voice-chat delay, which decides about half of close races.
+That needs the audio to go through QBuzzer. For the same reason, powers and
+negs are the moderator's call.
+
+## Deploying
+
+[docs/deploy.md](docs/deploy.md) (one Fly.io machine, private Managed
+Postgres; CI deploys `main` after approval). Pilot plan:
+[docs/pilot.md](docs/pilot.md).
 
 ## Persistence
 
-Set `DATABASE_URL` to a PostgreSQL connection string to keep games across
-restarts; without it, games live in memory. On startup the server migrates the
-schema (goose), restores every unfinished game active in the last two hours,
-and players reconnect to their seats automatically.
+Without `DATABASE_URL`, games live in memory only. With it, startup migrates
+the schema and restores unfinished games active in the last two hours; players
+reconnect to their seats.
 
-Rooms never wait on the database: they hand writes to a bounded in-memory
-queue that a single writer flushes every 100 ms. If the database falls behind
-long enough to fill the queue, the game keeps running and the moderator sees
-that it is no longer being saved.
+Rooms never wait on the database. Writes go to a bounded queue flushed every
+100 ms; a crash loses at most that interval. If the queue fills, the game
+continues unsaved and the moderator is told.
 
-Moderator passwords are stored as argon2id hashes and session tokens as
-SHA-256 hashes; neither is stored in plain text.
+Stored: argon2id password hashes and SHA-256 session-token hashes, never the
+secrets.
 
 ```sh
 make test-db   # all Go tests, including Postgres ones, against a throwaway database
@@ -90,10 +87,9 @@ make test-db   # all Go tests, including Postgres ones, against a throwaway data
 
 ## Performance
 
-200 rooms × 9 connections on one laptop: the lock fires within 0.5 ms of its
-deadline at p99, and the server uses about half a core
-([details, method, and before/after profiles](docs/loadtest.md)).
-Profiling is available on a loopback-only debug listener:
+200 rooms × 9 connections on one laptop: lock within 0.5 ms of its deadline
+at p99, about half a core ([docs/loadtest.md](docs/loadtest.md)). Profiling
+(loopback only):
 
 ```sh
 QBUZZER_DEBUG_ADDR=127.0.0.1:6060 ./bin/qbuzzer

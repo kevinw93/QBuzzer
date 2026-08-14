@@ -159,3 +159,23 @@ func OutboundCounts() map[string]uint64 {
 	})
 	return out
 }
+
+// Gauges and counters for operations, read by the Prometheus endpoint.
+var (
+	Connections    atomic.Int64  // open WebSocket connections
+	WriterFlushes  atomic.Uint64 // committed batches
+	WriterFailures atomic.Uint64 // failed flush attempts
+	WriterDropped  atomic.Uint64 // batches given up on (their games become unrecoverable)
+	RateLimited    sync.Map      // kind -> *atomic.Uint64
+)
+
+// WriterQueue reports ops waiting in the persistence queue; nil without one.
+var WriterQueue func() int
+
+func CountRateLimited(kind string) {
+	v, ok := RateLimited.Load(kind)
+	if !ok {
+		v, _ = RateLimited.LoadOrStore(kind, new(atomic.Uint64))
+	}
+	v.(*atomic.Uint64).Add(1) //nolint:forcetypeassert // only *atomic.Uint64 is stored
+}

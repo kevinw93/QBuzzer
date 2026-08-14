@@ -14,8 +14,6 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
         // The Go server rejects WebSockets whose Origin differs from Host.
-        // Rewriting Origin here keeps that check strict in production while
-        // letting the dev server (localhost:5173) through.
         configure: (proxy) => {
           proxy.on('proxyReqWs', (proxyReq) => proxyReq.setHeader('origin', goServer))
         },

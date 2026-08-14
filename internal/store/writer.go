@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kevinw93/QBuzzer/internal/metrics"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 	"github.com/kevinw93/QBuzzer/internal/store/db"
@@ -51,6 +52,9 @@ func NewWriter(pool *pgxpool.Pool, log *slog.Logger, cfg WriterConfig) *Writer {
 		broken: map[string]bool{},
 	}
 }
+
+// QueueLen is the number of ops waiting to be written.
+func (w *Writer) QueueLen() int { return len(w.ops) }
 
 // Enqueue never blocks.
 func (w *Writer) Enqueue(op room.Op) bool {
@@ -135,13 +139,16 @@ func (w *Writer) flush(batch []room.Op) {
 		err := w.write(ctx, live)
 		cancel()
 		if err == nil {
+			metrics.WriterFlushes.Add(1)
 			return
 		}
+		metrics.WriterFailures.Add(1)
 		w.log.Error("store: flush failed", "attempt", attempt, "ops", len(live), "err", err)
 		if attempt >= w.cfg.MaxAttempts {
 			for _, op := range live {
 				w.broken[room.GameID(op)] = true
 			}
+			metrics.WriterDropped.Add(1)
 			w.log.Error("store: dropped writes; affected games can't be recovered", "ops", len(live))
 			return
 		}

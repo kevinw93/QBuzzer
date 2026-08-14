@@ -7,12 +7,15 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/kevinw93/QBuzzer/internal/clock"
+	"github.com/kevinw93/QBuzzer/internal/limit"
+	"github.com/kevinw93/QBuzzer/internal/metrics"
 	"github.com/kevinw93/QBuzzer/internal/protocol"
 	"github.com/kevinw93/QBuzzer/internal/room"
 )
@@ -22,12 +25,48 @@ type Server struct {
 	log         *slog.Logger
 	clk         clock.Server
 	joinTimeout time.Duration
+	opts        Options
+}
+
+// Options are deployment settings; the zero value suits tests and local
+// development (no rate limits, client IP from the TCP connection).
+type Options struct {
+	// CreateLimit and JoinLimit throttle room creation (which costs an
+	// argon2id hash) and WebSocket joins per client IP. Nil disables.
+	CreateLimit, JoinLimit *limit.Limiter
+	// ClientIPHeader names a header set by a trusted reverse proxy (on Fly,
+	// "Fly-Client-IP"). Set it only behind such a proxy: anywhere else a
+	// client can forge it to dodge the limits.
+	ClientIPHeader string
 }
 
 // New returns the application handler. assets is the built frontend.
-func New(hub *room.Hub, assets fs.FS, log *slog.Logger) http.Handler {
-	s := &Server{hub: hub, log: log, clk: clock.NewServer(), joinTimeout: defaultJoinTimeout}
+func New(hub *room.Hub, assets fs.FS, log *slog.Logger, opts Options) http.Handler {
+	s := &Server{hub: hub, log: log, clk: clock.NewServer(), joinTimeout: defaultJoinTimeout, opts: opts}
 	return s.handler(assets)
+}
+
+func (s *Server) clientIP(r *http.Request) string {
+	if s.opts.ClientIPHeader != "" {
+		if ip := r.Header.Get(s.opts.ClientIPHeader); ip != "" {
+			return ip
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// allow applies l to r's client IP, writing a 429 when it refuses.
+func (s *Server) allow(w http.ResponseWriter, r *http.Request, l *limit.Limiter, kind string) bool {
+	if l == nil || l.Allow(s.clientIP(r)) {
+		return true
+	}
+	metrics.CountRateLimited(kind)
+	w.Header().Set("Retry-After", "60")
+	http.Error(w, "too many requests; try again in a minute", http.StatusTooManyRequests)
+	return false
 }
 
 func (s *Server) handler(assets fs.FS) http.Handler {
@@ -45,6 +84,9 @@ func (s *Server) handler(assets fs.FS) http.Handler {
 // createRoom is unauthenticated: anyone may open a room, and whoever knows
 // the password they chose can moderate it.
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
+	if !s.allow(w, r, s.opts.CreateLimit, "create_room") {
+		return
+	}
 	var req protocol.CreateRoomRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
 		http.Error(w, "body must be JSON with moderatorPassword", http.StatusBadRequest)

@@ -48,6 +48,11 @@ type env struct {
 
 func newEnv(t *testing.T, mod func(*room.Config)) *env {
 	t.Helper()
+	return newEnvOpts(t, mod, Options{})
+}
+
+func newEnvOpts(t *testing.T, mod func(*room.Config), opts Options) *env {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.DiscardHandler)
 	cfg := room.DefaultConfig()
@@ -56,7 +61,7 @@ func newEnv(t *testing.T, mod func(*room.Config)) *env {
 		mod(&cfg)
 	}
 	hub := room.NewHub(ctx, cfg, log)
-	s := &Server{hub: hub, log: log, clk: clock.NewServer(), joinTimeout: 200 * time.Millisecond}
+	s := &Server{hub: hub, log: log, clk: clock.NewServer(), joinTimeout: 200 * time.Millisecond, opts: opts}
 	ts := httptest.NewServer(s.handler(fstest.MapFS{"index.html": {Data: []byte("<h1>QBuzzer</h1>")}}))
 	t.Cleanup(func() {
 		cancel()
